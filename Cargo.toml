@@ -1,6 +1,6 @@
 [package]
 name = "video-fps-meter"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Measures the real frame rate of games and other rendered content from video recordings and renders FPS/frametime overlays."
