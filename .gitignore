@@ -1,0 +1,16 @@
+/target/
+
+# Recordings and generated outputs (large; never versioned)
+*.mkv
+*.mp4
+*.avi
+*.mov
+*_fps.csv
+*_chart.png
+*_overlay.mp4
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

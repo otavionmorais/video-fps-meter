@@ -1,0 +1,40 @@
+[package]
+name = "video-fps-meter"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Measures the real frame rate of games and other rendered content from video recordings and renders FPS/frametime overlays."
+readme = "README.md"
+keywords = ["fps", "frametime", "benchmark", "video", "ffmpeg"]
+categories = ["multimedia::video", "command-line-utilities"]
+
+[lib]
+name = "video_fps_meter"
+
+[[bin]]
+name = "video-fps-meter"
+path = "src/main.rs"
+
+[[bin]]
+name = "video-fps-meter-gui"
+path = "src/bin/gui.rs"
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+eframe = "0.37.0"
+epaint_default_fonts = "0.37.0"
+plotters = { version = "0.3.7", default-features = false, features = ["bitmap_backend", "bitmap_encoder", "ab_glyph", "line_series"] }
+rayon = "1.12.0"
+rfd = "0.17.2"
+sys-locale = "0.3.2"
+thiserror = "2.0.21"
+tiny-skia = "0.12.0"
+ttf-parser = "0.25.1"
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
