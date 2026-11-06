@@ -200,3 +200,106 @@ fn missing_file_is_reported() {
         analyze(Path::new("does-not-exist.mkv"), &Options::default(), &AtomicBool::new(false), |_| {});
     assert!(result.is_err());
 }
+
+/// Creates a 3 s source (90 frames) with moving content, BT.709 limited-range
+/// color tags and an AAC audio track slightly shorter than the video.
+fn source_with_audio(name: &str, pix_fmt: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("videos");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(format!("{name}.mkv"));
+    let status = Command::new("ffmpeg")
+        .args(["-y", "-hide_banner", "-loglevel", "error"])
+        .args(["-f", "lavfi", "-i", &format!("testsrc2=size={WIDTH}x{HEIGHT}:rate=30")])
+        .args(["-f", "lavfi", "-t", "2.9", "-i", "sine=frequency=440:sample_rate=48000"])
+        .args(["-frames:v", "90", "-c:v", "ffv1", "-pix_fmt", pix_fmt, "-c:a", "aac"])
+        .args([
+            "-color_range",
+            "tv",
+            "-colorspace",
+            "bt709",
+            "-color_primaries",
+            "bt709",
+            "-color_trc",
+            "bt709",
+        ])
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    path
+}
+
+/// Decoded frames of `path`, cropped to `crop` (FFmpeg `w:h:x:y`), in `pix_fmt`.
+fn decoded(path: &Path, pix_fmt: &str, crop: Option<&str>) -> Vec<u8> {
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-hide_banner", "-loglevel", "error", "-i"]).arg(path).args(["-map", "0:v"]);
+    if let Some(crop) = crop {
+        cmd.args(["-vf", &format!("crop={crop}")]);
+    }
+    let output = cmd.args(["-f", "rawvideo", "-pix_fmt", pix_fmt, "-"]).output().unwrap();
+    assert!(output.status.success());
+    output.stdout
+}
+
+/// MD5 of every audio packet payload, in order.
+fn audio_packet_hashes(path: &Path) -> String {
+    let output = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "a:0", "-show_entries", "packet=data_hash"])
+        .args(["-show_data_hash", "md5", "-of", "default=nw=1:nk=1"])
+        .arg(path)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn stream_field(path: &Path, stream: &str, field: &str) -> String {
+    let output = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", stream, "-show_entries", &format!("stream={field}")])
+        .args(["-of", "csv=p=0"])
+        .arg(path)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+fn assert_lossless_overlay(name: &str, pix_fmt: &str, nvenc: bool) {
+    let source = source_with_audio(name, pix_fmt);
+    let destination = OutputPaths::for_video(&source).overlay;
+    assert_eq!(destination.extension().unwrap(), "mkv");
+    let _ = std::fs::remove_file(&destination);
+    let analysis = run(&source, Options { overlay: Some(destination.clone()), nvenc, ..Options::default() });
+    assert_eq!(analysis.rows.len(), 90);
+
+    // The overlay covers the left part of the frame; the right part must be
+    // bit-identical to the source.
+    let untouched = "152:180:168:0";
+    let original = decoded(&source, pix_fmt, Some(untouched));
+    let rendered = decoded(&destination, pix_fmt, Some(untouched));
+    assert!(!original.is_empty());
+    assert!(original == rendered, "pixels outside the overlay changed");
+    assert_ne!(decoded(&source, pix_fmt, None), decoded(&destination, pix_fmt, None));
+
+    assert_eq!(stream_field(&destination, "v:0", "pix_fmt"), pix_fmt);
+    assert_eq!(stream_field(&destination, "v:0", "color_range"), stream_field(&source, "v:0", "color_range"));
+    assert_eq!(stream_field(&destination, "v:0", "color_space"), "bt709");
+    assert_eq!(stream_field(&destination, "a:0", "codec_name"), "aac");
+    let audio = audio_packet_hashes(&source);
+    assert!(audio.lines().count() > 100);
+    assert_eq!(audio_packet_hashes(&destination), audio, "audio was not copied unchanged");
+    assert_eq!(probe_frame_count(&destination), "90");
+}
+
+#[test]
+fn overlay_is_lossless_outside_the_overlay_8bit() {
+    assert_lossless_overlay("lossless_8bit", "yuv420p", false);
+}
+
+#[test]
+fn overlay_is_lossless_outside_the_overlay_10bit() {
+    assert_lossless_overlay("lossless_10bit", "yuv420p10le", false);
+}
+
+#[test]
+fn overlay_is_lossless_with_nvenc_or_fallback() {
+    assert_lossless_overlay("lossless_nvenc", "yuv420p", true);
+}

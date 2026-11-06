@@ -21,6 +21,7 @@ pub mod probe;
 pub mod stats;
 pub mod summary;
 pub mod timeline;
+pub mod yuv;
 
 pub use analysis::{Analysis, Options, Progress, Row, Stage, analyze};
 pub use i18n::Lang;

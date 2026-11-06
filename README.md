@@ -13,7 +13,7 @@ From that, the tool reports:
 - 1% low FPS
 - Stutters: frametime spikes, with count, rate per minute and the worst one
 - Static intervals (menus, pauses, loading screens), excluded from all statistics
-- Optional overlay video with the FPS counter, running statistics (average, 1% low, stutters) and FPS/frametime graphs, keeping the original audio
+- Optional overlay video with the FPS counter, running statistics (average, 1% low, stutters) and FPS/frametime graphs, without any quality loss (see below)
 
 ### Static intervals
 
@@ -28,6 +28,16 @@ Static intervals are excluded from the average FPS, frametimes, 1% low and stutt
 ### Stutters
 
 A stutter is a frametime at least **2.5×** the median of the previous 20 frametimes (`--stutter-factor`). With the default, an image that stays on screen for two or more extra refreshes is a stutter (100 ms at a steady 30 fps, 50 ms at 60 fps), while a single late frame is not; it still counts toward the average FPS and 1% low. A factor of 1.5 also reports single late frames. Each stutter is highlighted in the overlay for 1.5 s, flagged in the CSV and marked in red in the chart.
+
+### Overlay video
+
+The overlay video is lossless with respect to the recording:
+
+- Every pixel the overlay does not cover is **bit-identical** to the decoded recording. The overlay is blended directly into the recording's YUV planes (no RGB round trip) and the video is encoded losslessly in the same pixel format (HEVC NVENC with `--nvenc`, x264 lossless otherwise).
+- Audio tracks are **copied unchanged**.
+- The container (MKV, MP4 or MOV), pixel format and color tags of the recording are kept.
+
+Lossless video is large: several times the size of the recording (about 1.3 GB for 30 s of 4K30 in testing). Supported source formats are planar YUV 4:2:0, 4:2:2 and 4:4:4 at 8, 10 or 12 bits, which covers recordings from OBS and capture cards; other formats are converted to 4:4:4 and a warning is shown.
 
 ### Known limitations
 
@@ -57,7 +67,7 @@ A copy of FFmpeg next to the executables takes precedence over the one on `PATH`
 
 ### GPU acceleration (optional)
 
-With an NVIDIA GPU and an FFmpeg build that includes NVDEC/NVENC (the Windows builds above do), decoding runs on the GPU automatically and the overlay can be encoded with `--nvenc` / the **Use GPU (NVENC)** option. Without one, decoding and encoding run on the CPU.
+With an NVIDIA GPU and an FFmpeg build that includes NVDEC/NVENC (the Windows builds above do), decoding runs on the GPU automatically and the overlay can be encoded losslessly on the GPU with `--nvenc` / the **Use GPU (NVENC)** option. Without one, decoding and encoding run on the CPU.
 
 ## Usage
 
@@ -75,8 +85,8 @@ video-fps-meter recording.mkv --start 10 --end 70 --no-csv --lang pt
 
 | Option | Description |
 |---|---|
-| `--overlay` | Write `<name>_overlay.mp4` |
-| `--nvenc` | Encode the overlay with NVENC (falls back to x264 when unavailable) |
+| `--overlay` | Write `<name>_overlay.<ext>` (lossless, same container as the recording) |
+| `--nvenc` | Encode the overlay with lossless HEVC NVENC (falls back to lossless x264 when unavailable) |
 | `--target` | Target frame rate of the game; the overlay turns red below it (default 30) |
 | `--start` / `--end` | Span to analyze, in seconds |
 | `--threshold` | Changed pixels above this count mark a new image (default 20) |
@@ -121,7 +131,7 @@ The integration tests generate synthetic lossless videos with a known frame rate
 - Decoding is delegated to an `ffmpeg` subprocess that outputs raw BGR24 frames; no FFmpeg libraries are linked.
 - The grayscale conversion uses BT.601 weights in 15-bit fixed point, bit-exact with OpenCV's `COLOR_BGR2GRAY`.
 - Hardware decoding uses NVDEC (`-hwaccel cuda`). Decoded frames are converted to the stream's native pixel format before the BGR conversion, which makes the output bit-identical to software decoding. If NVDEC is unavailable, decoding falls back to the CPU.
-- Analysis runs in two passes when an overlay is requested: the first detects new images, the second decodes the recording again and draws the overlay with the complete timeline, so static intervals are marked from their first frame.
+- Analysis runs in two passes when an overlay is requested: the first detects new images (BGR24 frames), the second decodes the recording again in its native YUV format and blends the overlay with the complete timeline, so static intervals are marked from their first frame.
 - Decoding, analysis, overlay drawing and encoding run on separate threads; the per-frame metric is parallelized with Rayon.
 
 ## License

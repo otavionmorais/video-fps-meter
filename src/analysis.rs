@@ -4,9 +4,11 @@
 //!    find new images.
 //! 2. **Timeline:** frametimes, static intervals, rolling FPS and stutters
 //!    are derived from the whole sequence (see [`crate::timeline`]).
-//! 3. **Overlay pass** (optional): the recording is decoded again and the
-//!    overlay is drawn with the complete timeline, so static intervals are
-//!    marked from their first frame.
+//! 3. **Overlay pass** (optional): the recording is decoded again in its
+//!    native planar YUV format, the overlay is blended with the complete
+//!    timeline (so static intervals are marked from their first frame) and
+//!    the result is encoded losslessly. Pixels outside the overlay stay
+//!    bit-identical to the source.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,13 +16,14 @@ use std::sync::mpsc::{Sender, SyncSender, channel, sync_channel};
 use std::thread::{self, JoinHandle};
 
 use crate::decode::{DecodeParams, Decoder};
-use crate::encode::{EncodeParams, Encoder, nvenc_available};
+use crate::encode::{EncodeParams, Encoder, nvenc_lossless_available};
 use crate::i18n::{Lang, Strings};
 use crate::metric::gray_and_count;
 use crate::overlay::Overlay;
 use crate::probe::{ProbeError, VideoInfo, probe};
 use crate::stats::Stats;
 use crate::timeline::{self, DEFAULT_STATIC_MS, DEFAULT_STUTTER_FACTOR, StaticInterval, Stutter};
+use crate::yuv::{FALLBACK_PIX_FMT, FALLBACK_PIX_FMT_HIGH, YuvLayout};
 use crate::{Error, ffmpeg};
 
 /// Frames buffered between overlay drawing and the encoder.
@@ -47,7 +50,8 @@ pub struct Options {
     pub stutter_factor: f64,
     /// Destination of the overlay video. `None` skips the overlay.
     pub overlay: Option<PathBuf>,
-    /// Encode the overlay with NVIDIA NVENC, falling back to x264.
+    /// Encode the overlay with NVIDIA NVENC (lossless HEVC), falling back to
+    /// lossless x264.
     pub nvenc: bool,
     /// Let FFmpeg decode on the GPU when possible.
     pub hw_decode: bool,
@@ -177,6 +181,7 @@ pub fn analyze(
         max_frames,
         hw_decode: options.hw_decode,
         pix_fmt: info.pix_fmt.as_deref(),
+        output_pix_fmt: "bgr24",
         frame_len: info.width as usize * info.height as usize * 3,
     };
 
@@ -230,7 +235,8 @@ pub fn analyze(
         && !result.canceled
         && !result.rows.is_empty()
     {
-        let nvenc = options.nvenc && nvenc_available();
+        let layout = overlay_layout(&info, strings, &mut result.warnings);
+        let nvenc = options.nvenc && nvenc_lossless_available(&layout.pix_fmt);
         if options.nvenc && !nvenc {
             result.warnings.push(strings.nvenc_unavailable.to_owned());
         }
@@ -238,12 +244,16 @@ pub fn analyze(
             destination,
             original: path,
             info: &info,
+            pix_fmt: &layout.pix_fmt,
             start_s: options.start_s,
             duration_s: end_s.map(|end| end - options.start_s),
             nvenc,
         };
+        let decode =
+            DecodeParams { output_pix_fmt: &layout.pix_fmt, frame_len: layout.frame_len(), ..params };
         let total = result.rows.len() as f64;
-        let completed = render_overlay(&params, &encode, &info, options, &result.rows, cancel, |done| {
+        let overlay = Overlay::new(layout.clone(), rate, options.target_fps, options.lang);
+        let completed = render_overlay(&decode, &encode, overlay, &result.rows, strings, cancel, |done| {
             on_progress(Progress {
                 stage: Stage::Overlay,
                 fraction: detection_share + (1.0 - detection_share) * done as f64 / total,
@@ -265,19 +275,16 @@ pub fn analyze(
 fn render_overlay(
     decode: &DecodeParams,
     encode: &EncodeParams,
-    info: &VideoInfo,
-    options: &Options,
+    mut overlay: Overlay,
     rows: &[Row],
+    strings: &Strings,
     cancel: &AtomicBool,
     mut on_frame: impl FnMut(usize),
 ) -> Result<bool, Error> {
-    let strings = options.lang.strings();
     let (mut decoder, mut pending, recycle) = start_decoder(decode, strings)?;
     let encoder = Encoder::spawn(encode).map_err(|_| Error(strings.ffmpeg_missing.to_owned()))?;
     let (frames, writer) = spawn_writer(encoder, recycle);
 
-    let mut overlay =
-        Overlay::new(info.width, info.height, info.frame_rate(), options.target_fps, options.lang);
     let mut stats = Stats::new();
     let mut completed = true;
     let mut writer_stopped = false;
@@ -305,6 +312,19 @@ fn render_overlay(
         return Err(Error(format!("{}\n{detail}", strings.encode_failed)));
     }
     Ok(completed)
+}
+
+/// Frame layout for the overlay pass: the source's planar YUV format when
+/// supported, otherwise a 4:4:4 conversion (reported as a warning).
+fn overlay_layout(info: &VideoInfo, strings: &Strings, warnings: &mut Vec<String>) -> YuvLayout {
+    let native = info.pix_fmt.as_deref().unwrap_or_default();
+    if let Some(layout) = YuvLayout::new(native, info.width, info.height, &info.color) {
+        return layout;
+    }
+    let high_depth = ["10", "12", "16"].iter().any(|depth| native.contains(depth));
+    let fallback = if high_depth { FALLBACK_PIX_FMT_HIGH } else { FALLBACK_PIX_FMT };
+    warnings.push(strings.pixel_format_converted.replace("{from}", native).replace("{to}", fallback));
+    YuvLayout::new(fallback, info.width, info.height, &info.color).expect("fallback format is supported")
 }
 
 /// A running decoder, its first frame (`None` if decoding produced nothing)

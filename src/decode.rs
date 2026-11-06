@@ -1,4 +1,5 @@
-//! Frame decoding through an `ffmpeg` subprocess that emits raw BGR24 frames.
+//! Frame decoding through an `ffmpeg` subprocess that emits raw frames
+//! (BGR24 for the analysis, the native planar YUV format for the overlay).
 
 use std::io::{self, Read};
 use std::path::Path;
@@ -29,10 +30,12 @@ pub struct DecodeParams<'a> {
     /// Decode on the GPU.
     pub hw_decode: bool,
     /// Pixel format of the software decoder. Hardware frames are converted
-    /// to it before the BGR conversion, which makes the output bit-identical
-    /// to software decoding (a direct NV12 → BGR conversion is not).
+    /// to it first, which makes the output bit-identical to software decoding
+    /// (a direct NV12 → BGR conversion is not).
     pub pix_fmt: Option<&'a str>,
-    /// Size of one BGR24 frame in bytes.
+    /// Pixel format of the frames written to the pipe.
+    pub output_pix_fmt: &'a str,
+    /// Size of one output frame in bytes.
     pub frame_len: usize,
 }
 
@@ -65,7 +68,9 @@ impl Decoder {
         if let (true, Some(pix_fmt)) = (params.hw_decode, params.pix_fmt) {
             cmd.args(["-vf", &format!("format={pix_fmt}")]);
         }
-        cmd.args(["-f", "rawvideo", "-pix_fmt", "bgr24", "-"]).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.args(["-f", "rawvideo", "-pix_fmt", params.output_pix_fmt, "-"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         let mut child = cmd.spawn()?;
         let stdout = child.stdout.take().expect("stdout is piped");

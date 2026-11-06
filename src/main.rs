@@ -41,11 +41,12 @@ struct Cli {
     #[arg(long, default_value_t = video_fps_meter::DEFAULT_STUTTER_FACTOR)]
     stutter_factor: f64,
 
-    /// Write <name>_overlay.mp4 with the FPS counter, statistics and graphs.
+    /// Write <name>_overlay.<ext> with the FPS counter, statistics and graphs.
+    /// Lossless: pixels outside the overlay and audio are unchanged.
     #[arg(long)]
     overlay: bool,
 
-    /// Encode the overlay with NVIDIA NVENC (falls back to x264).
+    /// Encode the overlay with lossless HEVC NVENC (falls back to lossless x264).
     #[arg(long)]
     nvenc: bool,
 

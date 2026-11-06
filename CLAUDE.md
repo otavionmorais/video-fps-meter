@@ -12,6 +12,7 @@ Tool that measures the real frame rate of games and other rendered content from 
 | `src/metric.rs` | Grayscale conversion and changed-pixel count (Rayon) |
 | `src/decode.rs` / `src/encode.rs` | `ffmpeg` subprocesses (raw BGR24 over pipes) |
 | `src/probe.rs` | `ffprobe` stream info |
+| `src/yuv.rs` | Planar YUV layout and blending of RGBA layers into YUV frames |
 | `src/overlay.rs` | FPS counter and graphs (tiny-skia + ttf-parser, Hack font from `epaint_default_fonts`) |
 | `src/chart.rs` | PNG chart (plotters) |
 | `src/summary.rs`, `src/output.rs`, `src/i18n.rs` | Text summary, CSV/paths, localized strings |
@@ -25,7 +26,7 @@ Tool that measures the real frame rate of games and other rendered content from 
 - **Metric stability:** results must not change with the decoding path. Grayscale uses BT.601 weights in 15-bit fixed point (`3735, 19235, 9798`, shift 15), bit-exact with OpenCV's `COLOR_BGR2GRAY` over all 2^24 colors. CPU and GPU decoding produce identical rows.
 - **Hardware decoding:** `-hwaccel cuda` only, followed by `-vf format=<native pix_fmt>`. Without the format step, NV12 → BGR conversion differs from software decoding. D3D11VA was slower than CPU decoding for 4K HEVC (copy-back cost), and `-hwaccel auto` selected Vulkan, which crashes FFmpeg 9 on FFV1. Falls back to CPU when the first frame cannot be decoded.
 - **Seeking:** `-ss` is placed half a frame before the first requested frame to avoid losing it to container timestamp rounding; `-frames:v` limits the span; `-fps_mode passthrough` keeps every decoded frame.
-- **Overlay encoding:** NVENC is probed first; fallback to libx264 adds a warning. Original audio is mapped with `-map 1:a?`.
+- **Lossless overlay (owner requirement: never reduce quality):** pass 2 decodes the native planar YUV format and blends the RGBA layers into the YUV planes, touching only covered pixels and the chroma samples they share; the video is encoded losslessly in the same pixel format (`hevc_nvenc -tune lossless`, or `libx264 -qp 0`), audio streams are copied, container kept (MKV/MP4/MOV, else MKV). Verified on a real 4K HEVC recording: PSNR inf outside the overlay over all frames and identical audio packets. Pitfalls found: an RGB round trip changes every pixel even with lossless encoding; color tags given as *output* options make FFmpeg convert the frames (they must be *input* options on the raw stream); `-shortest` drops the last frames when audio is shorter; `-ss 0` on the audio input drops the AAC priming packet (seek only for spans). Unsupported source formats fall back to `yuv444p`/`yuv444p10le` with a warning.
 - **Subprocesses** use `CREATE_NO_WINDOW` on Windows. FFmpeg next to the executable takes precedence over `PATH`.
 - **FFmpeg is not bundled or versioned.** Full builds are ~217 MB per executable, above GitHub's 100 MB file limit. Users install it separately (README, "Installation"). The GPLv3 builds are redistributable if a release archive is ever added.
 - **`release/`** holds the prebuilt Windows executables and is versioned. After a change, rebuild with `cargo build --release` and copy both `.exe` files from the target directory into `release/`.
@@ -39,7 +40,7 @@ Tool that measures the real frame rate of games and other rendered content from 
 
 ## Performance notes
 
-Measured on a 15 s 4K30 HEVC clip (RTX 4060): analysis 6.4 s; analysis + NVENC overlay 15.5 s (two passes; 11.5 s with the earlier single-pass overlay). The metric takes ~1.7 ms per 4K frame; the bottleneck is the Windows pipe carrying 25 MB BGR24 frames (~1.6 GB/s). Reducing it requires either a different transport (smaller pixel format with bit-exact BGR reconstruction, or parallel decoders over segments) — pending owner decision.
+Measured on a 15 s 4K30 HEVC clip (RTX 4060): analysis 6.4 s. Lossless NVENC overlay on a real 30.8 s 4K30 recording: 36 s total, 1.3 GB output (source 205 MB). The metric takes ~1.7 ms per 4K frame; the bottleneck is the Windows pipe carrying 25 MB BGR24 frames (~1.6 GB/s). Reducing it requires either a different transport (smaller pixel format with bit-exact BGR reconstruction, or parallel decoders over segments) — pending owner decision.
 
 ## Development
 

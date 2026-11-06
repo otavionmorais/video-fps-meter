@@ -15,18 +15,28 @@ pub struct OutputPaths {
     pub csv: PathBuf,
     /// `<dir>/<name>_chart.png`
     pub chart: PathBuf,
-    /// `<dir>/<name>_overlay.mp4`
+    /// `<dir>/<name>_overlay.<ext>`, keeping the source container when it is
+    /// MKV, MP4 or MOV and using MKV otherwise.
     pub overlay: PathBuf,
 }
+
+/// Containers kept for the overlay video.
+const OVERLAY_CONTAINERS: [&str; 3] = ["mkv", "mp4", "mov"];
 
 impl OutputPaths {
     pub fn for_video(video: &Path) -> Self {
         let stem = video.file_stem().unwrap_or_default().to_string_lossy();
         let dir = video.parent().unwrap_or_else(|| Path::new(""));
+        let extension = video
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .filter(|e| OVERLAY_CONTAINERS.contains(&e.as_str()))
+            .unwrap_or_else(|| "mkv".to_owned());
         Self {
             csv: dir.join(format!("{stem}_fps.csv")),
             chart: dir.join(format!("{stem}_chart.png")),
-            overlay: dir.join(format!("{stem}_overlay.mp4")),
+            overlay: dir.join(format!("{stem}_overlay.{extension}")),
         }
     }
 }
@@ -76,4 +86,18 @@ pub fn save_outputs(analysis: &Analysis, video: &Path, csv: bool, chart: bool, l
         report("PNG", &paths.chart, chart::save_chart(analysis, &paths.chart, lang));
     }
     messages
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_keeps_supported_containers() {
+        let overlay = |name: &str| OutputPaths::for_video(Path::new(name)).overlay;
+        assert_eq!(overlay("dir/game.mkv"), Path::new("dir/game_overlay.mkv"));
+        assert_eq!(overlay("dir/game.MP4"), Path::new("dir/game_overlay.mp4"));
+        assert_eq!(overlay("game.mov"), Path::new("game_overlay.mov"));
+        assert_eq!(overlay("game.avi"), Path::new("game_overlay.mkv"));
+    }
 }

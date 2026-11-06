@@ -60,6 +60,7 @@ pub struct Strings {
     pub overlay_average: &'static str,
     pub overlay_stutters: &'static str,
     pub generating_overlay: &'static str,
+    pub pixel_format_converted: &'static str,
 }
 
 static EN: Strings = Strings {
@@ -83,7 +84,7 @@ static EN: Strings = Strings {
     ffmpeg_missing: "FFmpeg not found. Install it (Windows: winget install --id Gyan.FFmpeg -e) \
                      or place ffmpeg and ffprobe next to this program.",
     save_failed: "ERROR ({}) — is the file open in another program?",
-    nvenc_unavailable: "Warning: NVENC unavailable; the overlay was encoded on the CPU (x264).",
+    nvenc_unavailable: "Note: NVENC unavailable; the overlay was encoded losslessly on the CPU (x264).",
     encode_failed: "FFmpeg stopped accepting frames while generating the overlay.",
     static_excluded: "Excluded as static (menus, pauses)",
     interval: "interval",
@@ -96,6 +97,7 @@ static EN: Strings = Strings {
     overlay_average: "Avg",
     overlay_stutters: "Stutters",
     generating_overlay: "Generating overlay…",
+    pixel_format_converted: "Note: the overlay video uses {to} because the source pixel format ({from}) \n                             is not supported directly; the conversion is not lossless.",
 };
 
 static PT: Strings = Strings {
@@ -119,7 +121,7 @@ static PT: Strings = Strings {
     ffmpeg_missing: "FFmpeg não encontrado. Instale (Windows: winget install --id Gyan.FFmpeg -e) \
                      ou coloque ffmpeg e ffprobe na mesma pasta deste programa.",
     save_failed: "ERRO ({}) — o arquivo está aberto em outro programa?",
-    nvenc_unavailable: "Aviso: NVENC indisponível; o overlay foi codificado no processador (x264).",
+    nvenc_unavailable: "Aviso: NVENC indisponível; o overlay foi codificado sem perdas no processador (x264).",
     encode_failed: "O FFmpeg parou de aceitar quadros ao gerar o overlay.",
     static_excluded: "Excluído como cena parada (menus, pausas)",
     interval: "intervalo",
@@ -132,4 +134,5 @@ static PT: Strings = Strings {
     overlay_average: "Média",
     overlay_stutters: "Stutters",
     generating_overlay: "Gerando overlay…",
+    pixel_format_converted: "Aviso: o vídeo com overlay usa {to} porque o formato de pixel da fonte ({from}) \n                             não é suportado diretamente; essa conversão não é sem perdas.",
 };

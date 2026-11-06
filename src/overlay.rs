@@ -15,6 +15,7 @@ use ttf_parser::{Face, OutlineBuilder};
 use crate::analysis::Row;
 use crate::i18n::{Lang, Strings};
 use crate::stats::Stats;
+use crate::yuv::YuvLayout;
 
 type Rgb = [u8; 3];
 const LINE_COLOR: Rgb = [255, 220, 0];
@@ -52,10 +53,13 @@ pub struct Overlay {
     stutter_highlight: Option<(f64, u32)>,
     font: Face<'static>,
     layers: Vec<Layer>,
+    /// Layout of the frames the overlay is blended into.
+    frame_layout: YuvLayout,
 }
 
 impl Overlay {
-    pub fn new(width: u32, height: u32, capture_rate: f64, target_fps: f64, lang: Lang) -> Self {
+    pub fn new(frame_layout: YuvLayout, capture_rate: f64, target_fps: f64, lang: Lang) -> Self {
+        let (width, height) = (frame_layout.width as u32, frame_layout.height as u32);
         let scale = height as f32 / 1080.0;
         let points = ((capture_rate * GRAPH_SECONDS).round_ties_even() as usize).max(2);
         let (w, h) = (width as i32, height as i32);
@@ -85,6 +89,7 @@ impl Overlay {
             stutter_highlight: None,
             font: Face::parse(epaint_default_fonts::HACK_REGULAR, 0).expect("bundled font is valid"),
             layers,
+            frame_layout,
         }
     }
 
@@ -109,7 +114,7 @@ impl Overlay {
         push_bounded(&mut self.frametime_history, Some(self.current_frametime), self.points);
     }
 
-    /// Draws the overlay for `row` onto a BGR24 frame in place. `stats` holds
+    /// Draws the overlay for `row` onto a planar YUV frame in place. `stats` holds
     /// the statistics up to and including `row`.
     pub fn draw(&mut self, frame: &mut [u8], row: &Row, stats: &Stats) {
         for layer in &mut self.layers {
@@ -172,7 +177,8 @@ impl Overlay {
         }
 
         for layer in &self.layers {
-            layer.composite(frame, self.width as usize);
+            let (w, h) = (layer.pixmap.width() as usize, layer.pixmap.height() as usize);
+            self.frame_layout.blend(frame, layer.x as usize, layer.y as usize, w, h, layer.pixmap.data());
         }
     }
 }
@@ -339,28 +345,6 @@ impl Layer {
         self.pixmap.stroke_path(&path, &paint([0, 0, 0], 255, true), &stroke, transform, None);
         self.pixmap.fill_path(&path, &paint(color, 255, true), FillRule::Winding, transform, None);
     }
-
-    /// Blends the layer over a BGR24 frame.
-    fn composite(&self, frame: &mut [u8], frame_w: usize) {
-        let width = self.pixmap.width() as usize;
-        let data = self.pixmap.data();
-        for (row, src) in data.chunks_exact(width * 4).enumerate() {
-            let start = ((self.y as usize + row) * frame_w + self.x as usize) * 3;
-            let dst = &mut frame[start..start + width * 3];
-            for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(3)) {
-                let alpha = u32::from(s[3]);
-                if alpha == 0 {
-                    continue;
-                }
-                let inverse = 255 - alpha;
-                // Source is premultiplied RGBA; destination is BGR.
-                for (channel, premultiplied) in d.iter_mut().zip([s[2], s[1], s[0]]) {
-                    let blended = u32::from(premultiplied) + (u32::from(*channel) * inverse + 127) / 255;
-                    *channel = blended.min(255) as u8;
-                }
-            }
-        }
-    }
 }
 
 fn paint(color: Rgb, alpha: u8, anti_alias: bool) -> Paint<'static> {
@@ -450,8 +434,9 @@ mod tests {
     #[test]
     fn draws_without_panicking_on_small_and_large_frames() {
         for (w, h) in [(320u32, 180u32), (1920, 1080), (64, 36)] {
-            let mut overlay = Overlay::new(w, h, 60.0, 30.0, Lang::En);
-            let mut frame = vec![128u8; (w * h * 3) as usize];
+            let layout = YuvLayout::new("yuv420p", w, h, &crate::probe::ColorTags::default()).unwrap();
+            let mut frame = vec![128u8; layout.frame_len()];
+            let mut overlay = Overlay::new(layout, 60.0, 30.0, Lang::En);
             let mut stats = Stats::new();
             for i in 0..90 {
                 let row = Row {

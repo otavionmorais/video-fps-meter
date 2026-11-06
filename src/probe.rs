@@ -17,6 +17,19 @@ pub struct VideoInfo {
     pub frame_count: Option<u64>,
     /// Pixel format produced by the software decoder (e.g. `yuv420p`).
     pub pix_fmt: Option<String>,
+    /// Color tags (`ffprobe` names), copied to the overlay video.
+    pub color: ColorTags,
+}
+
+/// Color metadata of a stream, as reported by `ffprobe`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ColorTags {
+    /// `tv` (limited) or `pc` (full).
+    pub range: Option<String>,
+    /// Matrix coefficients, e.g. `bt709`, `smpte170m`, `bt2020nc`.
+    pub space: Option<String>,
+    pub primaries: Option<String>,
+    pub transfer: Option<String>,
 }
 
 impl VideoInfo {
@@ -44,7 +57,9 @@ pub enum ProbeError {
 pub fn probe(path: &Path) -> Result<VideoInfo, ProbeError> {
     let output = ffmpeg::command("ffprobe")
         .args(["-v", "error", "-select_streams", "v:0", "-show_entries"])
-        .arg("stream=width,height,pix_fmt,r_frame_rate,avg_frame_rate,nb_frames:format=duration")
+        .arg(
+            "stream=width,height,pix_fmt,r_frame_rate,avg_frame_rate,nb_frames,\n             color_range,color_space,color_primaries,color_transfer:format=duration",
+        )
         .args(["-of", "default=noprint_wrappers=1"])
         .arg(path)
         .stdout(Stdio::piped())
@@ -75,8 +90,15 @@ pub fn probe(path: &Path) -> Result<VideoInfo, ProbeError> {
     });
 
     let pix_fmt = field("pix_fmt").map(str::to_owned);
+    let tag = |key| field(key).filter(|v| *v != "unknown").map(str::to_owned);
+    let color = ColorTags {
+        range: tag("color_range"),
+        space: tag("color_space"),
+        primaries: tag("color_primaries"),
+        transfer: tag("color_transfer"),
+    };
 
-    Ok(VideoInfo { width, height, rate_num, rate_den, frame_count, pix_fmt })
+    Ok(VideoInfo { width, height, rate_num, rate_den, frame_count, pix_fmt, color })
 }
 
 fn parse_rational(text: &str) -> Option<(u64, u64)> {

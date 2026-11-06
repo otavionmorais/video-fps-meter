@@ -7,7 +7,7 @@
 *.mov
 *_fps.csv
 *_chart.png
-*_overlay.mp4
+*_overlay.*
 
 # Editors and OS
 .vscode/
