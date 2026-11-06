@@ -6,7 +6,9 @@ Tool that measures the real frame rate of games and other rendered content from 
 
 | Path | Contents |
 |---|---|
-| `src/analysis.rs` | Analysis loop, options, rows, threading (decoder → analysis → overlay/encoder) |
+| `src/analysis.rs` | Options, rows, detection pass and overlay pass (decoder → drawing → encoder threads) |
+| `src/timeline.rs` | Frametimes, static intervals, rolling FPS and stutters, derived from the `new_image` flags |
+| `src/stats.rs` | Cumulative statistics over non-static frames (shared by summary and overlay) |
 | `src/metric.rs` | Grayscale conversion and changed-pixel count (Rayon) |
 | `src/decode.rs` / `src/encode.rs` | `ffmpeg` subprocesses (raw BGR24 over pipes) |
 | `src/probe.rs` | `ffprobe` stream info |
@@ -28,11 +30,16 @@ Tool that measures the real frame rate of games and other rendered content from 
 - **FFmpeg is not bundled or versioned.** Full builds are ~217 MB per executable, above GitHub's 100 MB file limit. Users install it separately (README, "Installation"). The GPLv3 builds are redistributable if a release archive is ever added.
 - **`release/`** holds the prebuilt Windows executables and is versioned. After a change, rebuild with `cargo build --release` and copy both `.exe` files from the target directory into `release/`.
 - **Licensing:** MIT. `THIRD_PARTY_NOTICES.md` lists the embedded fonts (license texts in `licenses/`) and the crates linked into the Windows executables. Regenerate the crate table from `cargo metadata --filter-platform x86_64-pc-windows-msvc` (normal dependencies reachable from the root) when dependencies change; the project license must stay compatible with all of them.
-- **Out of scope by owner decision:** automatic static-scene detection and percentile-based pause filtering.
+- **Static intervals (owner priority: never report menus or pauses as drops):** a run of identical frames ≥ `static_ms` (default 500 ms), or a chain of runs each ≥ 200 ms totaling ≥ 1 s (blinking cursors), or an active span < 2 s between two static spans (menu transitions), is static. Static frames are excluded from all statistics, listed in the summary, `fps = None`, and shown as `FPS: —` with interrupted graphs. Classification is by timing only; classifying by low pixel activity was rejected because it would hide real low-motion gameplay.
+- **Stutters (owner priority):** frametime ≥ `stutter_factor` × median of the previous 20 counted frametimes (needs ≥ 5). Default 2.5: on a real 30 Hz recording, 1.5 flagged a single repeated frame (66.7 ms, possibly an OBS duplicate) that the owner did not see as a stutter. Frametimes that close a static run are not counted.
+- **Rolling FPS** uses the last second of non-static frames, so it continues across pauses instead of ramping up from zero; undefined for the first half second.
+- **Two-pass overlay:** static detection needs up to ~1 s of look-ahead, so the overlay is drawn in a second decode pass with the complete timeline. Chosen over a frame buffer, which would need up to ~1.5 GB at 4K60.
+- **Overlay statistics** (average, 1% low, stutter count) are cumulative up to the current frame and computed by `Stats`, the same code as the final summary.
+- **Out of scope by owner decision:** tearing detection, percentile-based pause filtering.
 
 ## Performance notes
 
-Measured on a 15 s 4K30 HEVC clip (RTX 4060): analysis 7.7 s; analysis + NVENC overlay 11.5 s. The metric takes ~1.7 ms per 4K frame; the bottleneck is the Windows pipe carrying 25 MB BGR24 frames (~1.6 GB/s). Reducing it requires either a different transport (smaller pixel format with bit-exact BGR reconstruction, or parallel decoders over segments) — pending owner decision.
+Measured on a 15 s 4K30 HEVC clip (RTX 4060): analysis 6.4 s; analysis + NVENC overlay 15.5 s (two passes; 11.5 s with the earlier single-pass overlay). The metric takes ~1.7 ms per 4K frame; the bottleneck is the Windows pipe carrying 25 MB BGR24 frames (~1.6 GB/s). Reducing it requires either a different transport (smaller pixel format with bit-exact BGR reconstruction, or parallel decoders over segments) — pending owner decision.
 
 ## Development
 

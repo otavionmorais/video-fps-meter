@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use crate::analysis::Row;
+use crate::analysis::{Analysis, Row};
 use crate::chart;
 use crate::i18n::Lang;
 
@@ -31,31 +31,32 @@ impl OutputPaths {
     }
 }
 
-/// Writes one line per captured frame.
+/// Writes one line per captured frame. Undefined values are left empty.
 pub fn write_csv(rows: &[Row], path: &Path) -> io::Result<()> {
     let mut out = BufWriter::new(File::create(path)?);
-    writeln!(out, "frame,time_s,changed_pixels,new_image,fps,frametime_ms")?;
+    writeln!(out, "frame,time_s,changed_pixels,new_image,static,fps,frametime_ms,stutter")?;
+    let optional = |value: Option<f64>| value.map(|v| format!("{v:.2}")).unwrap_or_default();
     for row in rows {
-        write!(
+        writeln!(
             out,
-            "{},{:.4},{},{},{:.2},",
+            "{},{:.4},{},{},{},{},{},{}",
             row.frame,
             row.time_s,
             row.changed_pixels,
             u8::from(row.new_image),
-            row.fps
+            u8::from(row.is_static),
+            optional(row.fps),
+            optional(row.frametime_ms),
+            u8::from(row.stutter)
         )?;
-        match row.frametime_ms {
-            Some(frametime) => writeln!(out, "{frametime:.2}")?,
-            None => writeln!(out)?,
-        }
     }
     out.flush()
 }
 
-/// Saves the CSV and/or chart next to `video` and returns one message per
-/// file describing the outcome.
-pub fn save_outputs(rows: &[Row], video: &Path, csv: bool, chart: bool, lang: Lang) -> Vec<String> {
+/// Saves the CSV and/or chart next to the analyzed `video` and returns one
+/// message per file describing the outcome.
+pub fn save_outputs(analysis: &Analysis, video: &Path, csv: bool, chart: bool, lang: Lang) -> Vec<String> {
+    let rows = &analysis.rows;
     if rows.is_empty() {
         return Vec::new();
     }
@@ -72,7 +73,7 @@ pub fn save_outputs(rows: &[Row], video: &Path, csv: bool, chart: bool, lang: La
         report("CSV", &paths.csv, write_csv(rows, &paths.csv).map_err(|e| e.to_string()));
     }
     if chart {
-        report("PNG", &paths.chart, chart::save_chart(rows, &paths.chart, lang));
+        report("PNG", &paths.chart, chart::save_chart(analysis, &paths.chart, lang));
     }
     messages
 }

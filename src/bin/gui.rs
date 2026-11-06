@@ -27,6 +27,8 @@ struct Texts {
     target: &'static str,
     start: &'static str,
     end: &'static str,
+    static_ms: &'static str,
+    stutter_factor: &'static str,
     optional: &'static str,
     analyze: &'static str,
     cancel: &'static str,
@@ -56,6 +58,8 @@ static EN: Texts = Texts {
     target: "Target FPS",
     start: "Start (s)",
     end: "End (s)",
+    static_ms: "Static scene (ms)",
+    stutter_factor: "Stutter (×)",
     optional: "optional",
     analyze: "Analyze",
     cancel: "Cancel",
@@ -65,7 +69,7 @@ static EN: Texts = Texts {
     canceled: "Canceled. Partial results below.",
     error: "Error",
     choose_video_first: "Choose a video first.",
-    invalid_numbers: "Invalid value in Target FPS, Start or End.",
+    invalid_numbers: "Invalid value in Target FPS, Start, End, Static scene or Stutter (must be at least 1).",
     unexpected_error: "Unexpected error",
     videos: "Videos",
     all_files: "All files",
@@ -85,6 +89,8 @@ static PT: Texts = Texts {
     target: "FPS alvo",
     start: "Início (s)",
     end: "Fim (s)",
+    static_ms: "Cena parada (ms)",
+    stutter_factor: "Stutter (×)",
     optional: "opcional",
     analyze: "Analisar",
     cancel: "Cancelar",
@@ -94,7 +100,7 @@ static PT: Texts = Texts {
     canceled: "Cancelado. Resultados parciais abaixo.",
     error: "Erro",
     choose_video_first: "Escolha um vídeo primeiro.",
-    invalid_numbers: "Valores inválidos em FPS alvo, Início ou Fim.",
+    invalid_numbers: "Valores inválidos em FPS alvo, Início, Fim, Cena parada ou Stutter (mínimo 1).",
     unexpected_error: "Erro inesperado",
     videos: "Vídeos",
     all_files: "Todos os arquivos",
@@ -105,6 +111,15 @@ fn texts(lang: Lang) -> &'static Texts {
         Lang::En => &EN,
         Lang::Pt => &PT,
     }
+}
+
+/// Validated numeric inputs.
+struct Inputs {
+    target: f64,
+    start: f64,
+    end: Option<f64>,
+    static_ms: f64,
+    stutter_factor: f64,
 }
 
 enum Message {
@@ -132,6 +147,8 @@ struct App {
     target: String,
     start: String,
     end: String,
+    static_ms: String,
+    stutter_factor: String,
     status: Status,
     progress: f32,
     report: String,
@@ -151,6 +168,8 @@ impl App {
             target: "30".into(),
             start: String::new(),
             end: String::new(),
+            static_ms: format!("{}", video_fps_meter::DEFAULT_STATIC_MS),
+            stutter_factor: format!("{}", video_fps_meter::DEFAULT_STUTTER_FACTOR),
             status: Status::Idle,
             progress: 0.0,
             report: String::new(),
@@ -174,7 +193,7 @@ impl App {
         }
     }
 
-    fn parse_inputs(&self) -> Option<(f64, f64, Option<f64>)> {
+    fn parse_inputs(&self) -> Option<Inputs> {
         let number = |text: &str| -> Result<Option<f64>, ()> {
             let text = text.trim().replace(',', ".");
             if text.is_empty() { Ok(None) } else { text.parse().map(Some).map_err(|_| ()) }
@@ -182,8 +201,12 @@ impl App {
         let target = number(&self.target).ok()?.unwrap_or(30.0);
         let start = number(&self.start).ok()?.unwrap_or(0.0);
         let end = number(&self.end).ok()?;
-        let valid = target > 0.0 && start >= 0.0 && end.is_none_or(|end| end > start);
-        valid.then_some((target, start, end))
+        let static_ms = number(&self.static_ms).ok()?.unwrap_or(0.0);
+        let stutter_factor =
+            number(&self.stutter_factor).ok()?.unwrap_or(video_fps_meter::DEFAULT_STUTTER_FACTOR);
+        let valid = target > 0.0 && start >= 0.0 && static_ms >= 0.0 && end.is_none_or(|end| end > start);
+        let valid = valid && stutter_factor >= 1.0;
+        valid.then_some(Inputs { target, start, end, static_ms, stutter_factor })
     }
 
     fn start_analysis(&mut self, ctx: &egui::Context) {
@@ -192,7 +215,7 @@ impl App {
             warn(t.error, t.choose_video_first);
             return;
         };
-        let Some((target, start, end)) = self.parse_inputs() else {
+        let Some(Inputs { target, start, end, static_ms, stutter_factor }) = self.parse_inputs() else {
             warn(t.error, t.invalid_numbers);
             return;
         };
@@ -201,6 +224,8 @@ impl App {
             start_s: start,
             end_s: end,
             target_fps: target,
+            static_ms,
+            stutter_factor,
             overlay: self.overlay.then(|| OutputPaths::for_video(&video).overlay),
             nvenc: self.nvenc,
             lang: self.lang,
@@ -295,12 +320,12 @@ fn run_analysis(
     });
     let message = match result {
         Ok(analysis) => {
-            let mut lines = save_outputs(&analysis.rows, video, csv, chart, options.lang);
+            let mut lines = save_outputs(&analysis, video, csv, chart, options.lang);
             if let Some(overlay) = options.overlay.as_ref().filter(|p| p.exists()) {
                 lines.push(format!("Overlay: {}", overlay.display()));
             }
             lines.extend(analysis.warnings.iter().cloned());
-            let summary = summarize(&analysis.rows, analysis.capture_rate, options.lang);
+            let summary = summarize(&analysis, options.lang);
             Message::Finished {
                 report: format!("{summary}\n\n{}", lines.join("\n")),
                 canceled: analysis.canceled,
@@ -391,11 +416,13 @@ impl eframe::App for App {
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.add_enabled_ui(!working, |ui| {
-                    ui.columns(3, |columns| {
+                    ui.columns(5, |columns| {
                         let fields = [
                             (t.target, &mut self.target, ""),
                             (t.start, &mut self.start, t.optional),
                             (t.end, &mut self.end, t.optional),
+                            (t.static_ms, &mut self.static_ms, ""),
+                            (t.stutter_factor, &mut self.stutter_factor, ""),
                         ];
                         for (column, (label, value, hint)) in columns.iter_mut().zip(fields) {
                             column.vertical_centered(|ui| {

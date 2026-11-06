@@ -49,6 +49,17 @@ pub struct Strings {
     pub save_failed: &'static str,
     pub nvenc_unavailable: &'static str,
     pub encode_failed: &'static str,
+    pub static_excluded: &'static str,
+    pub interval: &'static str,
+    pub intervals: &'static str,
+    pub longest: &'static str,
+    pub at: &'static str,
+    pub stutters: &'static str,
+    pub worst: &'static str,
+    pub active_time: &'static str,
+    pub overlay_average: &'static str,
+    pub overlay_stutters: &'static str,
+    pub generating_overlay: &'static str,
 }
 
 static EN: Strings = Strings {
@@ -74,6 +85,17 @@ static EN: Strings = Strings {
     save_failed: "ERROR ({}) — is the file open in another program?",
     nvenc_unavailable: "Warning: NVENC unavailable; the overlay was encoded on the CPU (x264).",
     encode_failed: "FFmpeg stopped accepting frames while generating the overlay.",
+    static_excluded: "Excluded as static (menus, pauses)",
+    interval: "interval",
+    intervals: "intervals",
+    longest: "longest",
+    at: "at",
+    stutters: "Stutters",
+    worst: "worst",
+    active_time: "active",
+    overlay_average: "Avg",
+    overlay_stutters: "Stutters",
+    generating_overlay: "Generating overlay…",
 };
 
 static PT: Strings = Strings {
@@ -99,4 +121,15 @@ static PT: Strings = Strings {
     save_failed: "ERRO ({}) — o arquivo está aberto em outro programa?",
     nvenc_unavailable: "Aviso: NVENC indisponível; o overlay foi codificado no processador (x264).",
     encode_failed: "O FFmpeg parou de aceitar quadros ao gerar o overlay.",
+    static_excluded: "Excluído como cena parada (menus, pausas)",
+    interval: "intervalo",
+    intervals: "intervalos",
+    longest: "maior",
+    at: "em",
+    stutters: "Stutters",
+    worst: "pior",
+    active_time: "ativos",
+    overlay_average: "Média",
+    overlay_stutters: "Stutters",
+    generating_overlay: "Gerando overlay…",
 };

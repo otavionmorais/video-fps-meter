@@ -1,6 +1,9 @@
-//! FPS counter and FPS/frametime graphs drawn over the video frames.
+//! FPS counter, running statistics and FPS/frametime graphs drawn over the
+//! video frames.
 //!
-//! Layout and sizes are defined for 1080p and scaled with the frame height.
+//! Inside static intervals the counter shows a dash and the graphs are
+//! interrupted. Layout and sizes are defined for 1080p and scaled with the
+//! frame height.
 
 use std::collections::VecDeque;
 
@@ -9,7 +12,9 @@ use tiny_skia::{
 };
 use ttf_parser::{Face, OutlineBuilder};
 
+use crate::analysis::Row;
 use crate::i18n::{Lang, Strings};
+use crate::stats::Stats;
 
 type Rgb = [u8; 3];
 const LINE_COLOR: Rgb = [255, 220, 0];
@@ -24,6 +29,10 @@ const GRAPH_SECONDS: f64 = 5.0;
 const FONT_PX_PER_SCALE: f32 = 30.0;
 /// Width, in pixels at 1080p, of the dark outline around text.
 const TEXT_OUTLINE: f32 = 3.0;
+/// How long the last stutter stays highlighted, in seconds.
+const STUTTER_HIGHLIGHT_S: f64 = 1.5;
+/// Shown instead of a value that is not available.
+const NO_VALUE: &str = "—";
 
 pub struct Overlay {
     strings: &'static Strings,
@@ -31,12 +40,16 @@ pub struct Overlay {
     height: i32,
     /// Frame height relative to 1080p.
     scale: f32,
+    capture_rate: f64,
     target_fps: f64,
     /// Number of samples visible in each graph.
     points: usize,
-    fps_history: VecDeque<f64>,
-    frametime_history: VecDeque<f64>,
+    /// `None` marks static frames, drawn as gaps.
+    fps_history: VecDeque<Option<f64>>,
+    frametime_history: VecDeque<Option<f64>>,
     current_frametime: f64,
+    /// Last stutter and how many more frames it stays highlighted.
+    stutter_highlight: Option<(f64, u32)>,
     font: Face<'static>,
     layers: Vec<Layer>,
 }
@@ -49,8 +62,8 @@ impl Overlay {
         let px = |v: f32| (v * scale) as i32;
         let graph_right = px(40.0) + (width as f64 * 0.45) as i32;
         let layers = [
-            // FPS counter.
-            (0, 0, px(320.0), px(140.0)),
+            // FPS counter and running statistics.
+            (0, 0, px(460.0), px(230.0)),
             // Both graphs with their labels.
             (0, h - px(440.0), graph_right + px(50.0), h - px(20.0)),
         ]
@@ -63,39 +76,76 @@ impl Overlay {
             width: w,
             height: h,
             scale,
+            capture_rate,
             target_fps,
             points,
             fps_history: VecDeque::with_capacity(points),
             frametime_history: VecDeque::with_capacity(points),
             current_frametime: 1000.0 / capture_rate,
+            stutter_highlight: None,
             font: Face::parse(epaint_default_fonts::HACK_REGULAR, 0).expect("bundled font is valid"),
             layers,
         }
     }
 
-    /// Adds one captured frame to the graph history. `frametime_ms` is set
-    /// when the frame completed an image.
-    pub fn record(&mut self, fps: f64, frametime_ms: Option<f64>) {
-        if let Some(frametime) = frametime_ms {
-            self.current_frametime = frametime;
+    /// Adds one captured frame to the graph history.
+    pub fn record(&mut self, row: &Row) {
+        if let Some((_, frames_left)) = &mut self.stutter_highlight {
+            *frames_left = frames_left.saturating_sub(1);
         }
-        push_bounded(&mut self.fps_history, fps, self.points);
-        push_bounded(&mut self.frametime_history, self.current_frametime, self.points);
+        if row.is_static {
+            push_bounded(&mut self.fps_history, None, self.points);
+            push_bounded(&mut self.frametime_history, None, self.points);
+            return;
+        }
+        if let Some(frametime) = row.frametime_ms {
+            self.current_frametime = frametime;
+            if row.stutter {
+                let frames = (self.capture_rate * STUTTER_HIGHLIGHT_S).round() as u32;
+                self.stutter_highlight = Some((frametime, frames));
+            }
+        }
+        push_bounded(&mut self.fps_history, row.fps, self.points);
+        push_bounded(&mut self.frametime_history, Some(self.current_frametime), self.points);
     }
 
-    /// Draws the overlay onto a BGR24 frame in place.
-    pub fn draw(&mut self, frame: &mut [u8], fps: f64) {
+    /// Draws the overlay for `row` onto a BGR24 frame in place. `stats` holds
+    /// the statistics up to and including `row`.
+    pub fn draw(&mut self, frame: &mut [u8], row: &Row, stats: &Stats) {
         for layer in &mut self.layers {
             layer.pixmap.fill(Color::TRANSPARENT);
         }
         let s = self.scale;
         let px = |v: f32| (v * s) as i32;
         let target = self.target_fps;
+        let strings = self.strings;
 
         if let Some(top) = self.layers.first_mut() {
-            let color = if fps < target - 0.5 { BAD_COLOR } else { TEXT_COLOR };
-            top.panel(px(30.0), px(30.0), px(260.0), px(90.0));
-            top.text(&self.font, &format!("FPS: {fps:.0}"), px(45.0), px(95.0), 1.6 * s, color);
+            let (counter, color) = match row.fps.filter(|_| !row.is_static) {
+                Some(fps) => {
+                    (format!("FPS: {fps:.0}"), if fps < target - 0.5 { BAD_COLOR } else { TEXT_COLOR })
+                }
+                None => (format!("FPS: {NO_VALUE}"), TEXT_COLOR),
+            };
+            let value = |v: Option<f64>| v.map_or_else(|| NO_VALUE.to_owned(), |v| format!("{v:.1}"));
+            let averages = format!(
+                "{} {}   1% low {}",
+                strings.overlay_average,
+                value(stats.average_fps(self.capture_rate)),
+                value(stats.one_percent_low())
+            );
+            let stutters = format!("{} {}", strings.overlay_stutters, stats.stutters());
+
+            top.panel(px(30.0), px(30.0), px(400.0), px(170.0));
+            top.text(&self.font, &counter, px(45.0), px(95.0), 1.6 * s, color);
+            top.text(&self.font, &averages, px(45.0), px(140.0), 0.6 * s, TEXT_COLOR);
+            top.text(&self.font, &stutters, px(45.0), px(178.0), 0.6 * s, TEXT_COLOR);
+            if let Some((frametime, frames_left)) = self.stutter_highlight
+                && frames_left > 0
+            {
+                let x = px(45.0) + text_width(&self.font, &format!("{stutters}  "), 0.6 * s) as i32;
+                top.text(&self.font, &format!("+{frametime:.1} ms"), x, px(178.0), 0.6 * s, BAD_COLOR);
+            }
         }
 
         if let Some(bottom) = self.layers.get_mut(1) {
@@ -127,7 +177,7 @@ impl Overlay {
     }
 }
 
-fn push_bounded(history: &mut VecDeque<f64>, value: f64, capacity: usize) {
+fn push_bounded(history: &mut VecDeque<Option<f64>>, value: Option<f64>, capacity: usize) {
     if history.len() == capacity {
         history.pop_front();
     }
@@ -143,10 +193,11 @@ struct Graph<'a> {
 
 impl Graph<'_> {
     /// Draws a line graph. `area` is `(x, y, width, height)`; `is_bad`
-    /// selects the red color for a segment from its end value.
+    /// selects the red color for a segment from its end value. `None`
+    /// values interrupt the line.
     fn draw(
         &mut self,
-        values: &VecDeque<f64>,
+        values: &VecDeque<Option<f64>>,
         area: (i32, i32, i32, i32),
         (min, max): (f64, f64),
         marks: &[f64],
@@ -177,23 +228,39 @@ impl Graph<'_> {
         }
 
         let step = f64::from(w) / (self.points - 1) as f64;
-        let points: Vec<(f32, f32)> = values
-            .iter()
-            .enumerate()
-            .map(|(i, &v)| ((f64::from(x) + i as f64 * step) as i32 as f32, to_y(v.clamp(min, max)) as f32))
-            .collect();
         let width = (2.0 * s).floor().max(1.0);
-        // Consecutive segments of the same color are stroked as one path.
-        let mut start = 0;
-        while start + 1 < points.len() {
-            let bad = is_bad(values[start + 1]);
-            let mut end = start + 1;
-            while end + 1 < points.len() && is_bad(values[end + 1]) == bad {
-                end += 1;
+        let mut i = 0;
+        while i < values.len() {
+            // Contiguous run of defined values.
+            if values[i].is_none() {
+                i += 1;
+                continue;
             }
-            let color = if bad { BAD_COLOR } else { LINE_COLOR };
-            self.layer.polyline(&points[start..=end], color, width);
-            start = end;
+            let run_start = i;
+            while i < values.len() && values[i].is_some() {
+                i += 1;
+            }
+            let run: Vec<f64> = values.range(run_start..i).flatten().copied().collect();
+            let points: Vec<(f32, f32)> = run
+                .iter()
+                .enumerate()
+                .map(|(k, &v)| {
+                    let px_x = (f64::from(x) + (run_start + k) as f64 * step) as i32 as f32;
+                    (px_x, to_y(v.clamp(min, max)) as f32)
+                })
+                .collect();
+            // Consecutive segments of the same color are stroked as one path.
+            let mut start = 0;
+            while start + 1 < points.len() {
+                let bad = is_bad(run[start + 1]);
+                let mut end = start + 1;
+                while end + 1 < points.len() && is_bad(run[end + 1]) == bad {
+                    end += 1;
+                }
+                let color = if bad { BAD_COLOR } else { LINE_COLOR };
+                self.layer.polyline(&points[start..=end], color, width);
+                start = end;
+            }
         }
     }
 }
@@ -303,6 +370,15 @@ fn paint(color: Rgb, alpha: u8, anti_alias: bool) -> Paint<'static> {
     paint
 }
 
+/// Horizontal advance of `text` at a text scale of `size`, in pixels.
+fn text_width(font: &Face, text: &str, size: f32) -> f32 {
+    let scale = FONT_PX_PER_SCALE * size / f32::from(font.units_per_em());
+    text.chars()
+        .filter_map(|ch| font.glyph_index(ch))
+        .map(|glyph| f32::from(font.glyph_hor_advance(glyph).unwrap_or(0)) * scale)
+        .sum()
+}
+
 /// Builds the outline of `text` at `size_px`, with the baseline at `(x, y)`.
 fn text_path(font: &Face, text: &str, x: f32, y: f32, size_px: f32) -> Option<Path> {
     let scale = size_px / f32::from(font.units_per_em());
@@ -376,9 +452,19 @@ mod tests {
         for (w, h) in [(320u32, 180u32), (1920, 1080), (64, 36)] {
             let mut overlay = Overlay::new(w, h, 60.0, 30.0, Lang::En);
             let mut frame = vec![128u8; (w * h * 3) as usize];
-            for i in 0..60 {
-                overlay.record(if i % 7 == 0 { 20.0 } else { 30.0 }, (i % 2 == 0).then_some(33.3));
-                overlay.draw(&mut frame, 29.0);
+            let mut stats = Stats::new();
+            for i in 0..90 {
+                let row = Row {
+                    new_image: i % 2 == 0,
+                    is_static: (40..60).contains(&i),
+                    fps: Some(if i % 7 == 0 { 20.0 } else { 30.0 }),
+                    frametime_ms: (i % 2 == 0).then_some(if i == 70 { 66.7 } else { 33.3 }),
+                    stutter: i == 70,
+                    ..Row::default()
+                };
+                stats.push(&row);
+                overlay.record(&row);
+                overlay.draw(&mut frame, &row, &stats);
             }
         }
     }

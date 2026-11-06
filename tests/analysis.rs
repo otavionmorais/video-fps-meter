@@ -86,13 +86,45 @@ fn drop_is_detected() {
     let worst = frametimes(&analysis).into_iter().fold(0.0, f64::max);
     assert!((worst - 50.0).abs() < 0.1);
     assert!(average_fps(&analysis) < 30.0);
+    // A sustained drop to 20 fps is a lower frame rate, not a stutter.
+    assert!(analysis.stutters.is_empty());
+    assert!(analysis.static_intervals.is_empty());
 }
 
 #[test]
-fn static_screen_gives_zero_fps() {
+fn static_screen_is_excluded() {
     let video = synthetic_video("static", 30, 120, |_| 10_000);
     let analysis = run(&video, Options::default());
     assert_eq!(analysis.rows.iter().filter(|r| r.new_image).count(), 1);
+    assert_eq!(analysis.static_intervals.len(), 1);
+    assert!(analysis.stutters.is_empty());
+}
+
+#[test]
+fn menu_and_stutter_are_told_apart() {
+    // 4 s of 30 fps, a 150 ms hitch, 2 s of 30 fps, a 3 s pause, 2 s of 30 fps.
+    let video = synthetic_video("menu_and_stutter", 60, 669, |i| match i {
+        240 => 9,
+        369 => 180,
+        _ => 2,
+    });
+    let destination = OutputPaths::for_video(&video).overlay;
+    let _ = std::fs::remove_file(&destination);
+    let analysis = run(&video, Options { overlay: Some(destination.clone()), ..Options::default() });
+
+    assert_eq!(analysis.static_intervals.len(), 1);
+    let pause = &analysis.static_intervals[0];
+    assert!((pause.start_s - 370.0 / 60.0).abs() < 1e-9);
+    assert!((pause.duration_s - 179.0 / 60.0).abs() < 1e-9);
+
+    assert_eq!(analysis.stutters.len(), 1);
+    assert!((analysis.stutters[0].frametime_ms - 150.0).abs() < 0.01);
+    assert!((analysis.stutters[0].time_s - 249.0 / 60.0).abs() < 1e-9);
+
+    let stats = analysis.stats();
+    assert!((stats.worst_frametime().unwrap() - 150.0).abs() < 0.01);
+    assert!(analysis.rows.iter().filter(|r| r.is_static).all(|r| r.fps.is_none()));
+    assert_eq!(probe_frame_count(&destination), "669");
 }
 
 #[test]
@@ -116,8 +148,8 @@ fn hardware_and_software_decoding_agree() {
 fn summary_in_both_languages() {
     let video = synthetic_video("languages", 60, 120, |_| 2);
     let analysis = run(&video, Options::default());
-    assert!(summarize(&analysis.rows, analysis.capture_rate, Lang::Pt).contains("FPS médio real"));
-    assert!(summarize(&analysis.rows, analysis.capture_rate, Lang::En).contains("Real average FPS"));
+    assert!(summarize(&analysis, Lang::Pt).contains("FPS médio real"));
+    assert!(summarize(&analysis, Lang::En).contains("Real average FPS"));
 }
 
 #[test]
@@ -128,13 +160,17 @@ fn optional_outputs() {
     let _ = std::fs::remove_file(&paths.chart);
     let analysis = run(&video, Options::default());
 
-    save_outputs(&analysis.rows, &video, true, false, Lang::En);
+    save_outputs(&analysis, &video, true, false, Lang::En);
     assert!(paths.csv.exists());
     assert!(!paths.chart.exists());
     let csv = std::fs::read_to_string(&paths.csv).unwrap();
     assert_eq!(csv.lines().count(), 121);
+    assert_eq!(
+        csv.lines().next(),
+        Some("frame,time_s,changed_pixels,new_image,static,fps,frametime_ms,stutter")
+    );
 
-    save_outputs(&analysis.rows, &video, false, true, Lang::En);
+    save_outputs(&analysis, &video, false, true, Lang::En);
     assert!(paths.chart.exists());
 }
 
@@ -145,14 +181,17 @@ fn overlay_video_has_every_frame() {
     let _ = std::fs::remove_file(&destination);
     let analysis = run(&video, Options { overlay: Some(destination.clone()), ..Options::default() });
     assert_eq!(analysis.rows.len(), 180);
+    assert_eq!(probe_frame_count(&destination), "180");
+}
 
+fn probe_frame_count(path: &Path) -> String {
     let output = Command::new("ffprobe")
         .args(["-v", "error", "-count_frames", "-select_streams", "v:0"])
         .args(["-show_entries", "stream=nb_read_frames", "-of", "csv=p=0"])
-        .arg(&destination)
+        .arg(path)
         .output()
         .unwrap();
-    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "180");
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
 #[test]

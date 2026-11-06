@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
 use clap::{Parser, ValueEnum};
-use video_fps_meter::{Lang, Options, OutputPaths, analyze, save_outputs, summarize};
+use video_fps_meter::{Lang, Options, OutputPaths, Stage, analyze, save_outputs, summarize};
 
 /// Measures the real frame rate of a game or other rendered content from a video recording.
 #[derive(Parser)]
@@ -30,7 +30,18 @@ struct Cli {
     #[arg(long, default_value_t = 30.0)]
     target: f64,
 
-    /// Write <name>_overlay.mp4 with the FPS counter and graphs.
+    /// An image unchanged for at least this many milliseconds marks a static
+    /// interval (menu, pause), excluded from the statistics. 0 disables it.
+    #[arg(long, default_value_t = video_fps_meter::DEFAULT_STATIC_MS)]
+    static_ms: f64,
+
+    /// A frametime at least this many times the median of the previous ones
+    /// is a stutter. The default (2.5) requires two or more consecutive late
+    /// frames; 1.5 also counts single late frames.
+    #[arg(long, default_value_t = video_fps_meter::DEFAULT_STUTTER_FACTOR)]
+    stutter_factor: f64,
+
+    /// Write <name>_overlay.mp4 with the FPS counter, statistics and graphs.
     #[arg(long)]
     overlay: bool,
 
@@ -74,15 +85,23 @@ fn main() -> ExitCode {
         start_s: cli.start,
         end_s: cli.end,
         target_fps: cli.target,
+        static_ms: cli.static_ms,
+        stutter_factor: cli.stutter_factor,
         overlay: overlay.clone(),
         nvenc: cli.nvenc,
         hw_decode: !cli.no_hw_decode,
         lang,
     };
 
+    let mut stage = Stage::Detection;
     let mut next_report = 10.0;
     let analysis = match analyze(&cli.video, &options, &AtomicBool::new(false), |progress| {
-        if progress.video_time_s >= next_report {
+        if progress.stage != stage {
+            stage = progress.stage;
+            next_report = 10.0;
+            eprintln!("{}", lang.strings().generating_overlay);
+        }
+        if progress.video_time_s >= next_report && progress.fraction < 1.0 {
             eprintln!("  {:.0} s", progress.video_time_s);
             next_report = (progress.video_time_s / 10.0).floor() * 10.0 + 10.0;
         }
@@ -94,8 +113,8 @@ fn main() -> ExitCode {
         }
     };
 
-    println!("\n{}\n", summarize(&analysis.rows, analysis.capture_rate, lang));
-    for message in save_outputs(&analysis.rows, &cli.video, !cli.no_csv, !cli.no_chart, lang) {
+    println!("\n{}\n", summarize(&analysis, lang));
+    for message in save_outputs(&analysis, &cli.video, !cli.no_csv, !cli.no_chart, lang) {
         println!("{message}");
     }
     if let Some(path) = overlay {

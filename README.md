@@ -11,11 +11,27 @@ From that, the tool reports:
 - Real average FPS
 - Frametime of each image (how long it stayed on screen)
 - 1% low FPS
-- Optional overlay video with an FPS counter and FPS/frametime graphs, keeping the original audio
+- Stutters: frametime spikes, with count, rate per minute and the worst one
+- Static intervals (menus, pauses, loading screens), excluded from all statistics
+- Optional overlay video with the FPS counter, running statistics (average, 1% low, stutters) and FPS/frametime graphs, keeping the original audio
+
+### Static intervals
+
+An image that does not change is either a game that stopped rendering or a scene where nothing moves. Gameplay almost always contains some motion (particles, foliage, HUD), so long runs of identical frames are treated as menus or pauses rather than drops:
+
+1. A single image that stays on screen for at least **500 ms** (`--static-ms`) starts a static interval.
+2. A sequence of slow images (each lasting at least 200 ms) that spans at least 1 s is also static. This covers menus with a blinking cursor.
+3. A span with motion shorter than 2 s between two static spans is also static. This covers animated transitions between menu screens. Gameplay that resumes after a menu is not affected.
+
+Static intervals are excluded from the average FPS, frametimes, 1% low and stutter count. They are listed in the summary (count, total and longest, with position), marked in the CSV and shaded in the chart. In the overlay the counter shows `FPS: —` and the graphs are interrupted. Shorter freezes are not affected and are reported as stutters.
+
+### Stutters
+
+A stutter is a frametime at least **2.5×** the median of the previous 20 frametimes (`--stutter-factor`). With the default, an image that stays on screen for two or more extra refreshes is a stutter (100 ms at a steady 30 fps, 50 ms at 60 fps), while a single late frame is not; it still counts toward the average FPS and 1% low. A factor of 1.5 also reports single late frames. Each stutter is highlighted in the overlay for 1.5 s, flagged in the CSV and marked in red in the chart.
 
 ### Known limitations
 
-- **A static scene counts as a drop.** From video alone, an image that did not change because nothing moved is indistinguishable from an image the game failed to render. Analyze spans with motion and use the start/end options to exclude menus and pauses.
+- **Static detection is a heuristic.** A real freeze longer than the static threshold is excluded instead of counted; the summary lists every excluded interval so it can be checked. Animated menus and loading screens render real frames and are measured as gameplay; use `--start` / `--end` to leave them out.
 - **Precision is bounded by the recording rate.** A 30 Hz recording measures up to 30 fps with 33.3 ms frametime resolution; at 60 Hz the step is 16.7 ms.
 - **No screen-tearing detection.** Designed for v-synced output.
 
@@ -64,11 +80,13 @@ video-fps-meter recording.mkv --start 10 --end 70 --no-csv --lang pt
 | `--target` | Target frame rate of the game; the overlay turns red below it (default 30) |
 | `--start` / `--end` | Span to analyze, in seconds |
 | `--threshold` | Changed pixels above this count mark a new image (default 20) |
+| `--static-ms` | An image unchanged for at least this long starts a static interval (default 500; 0 disables) |
+| `--stutter-factor` | A frametime at least this many times the recent median is a stutter (default 2.5) |
 | `--no-hw-decode` | Decode on the CPU only |
 | `--no-csv` / `--no-chart` | Skip `<name>_fps.csv` / `<name>_chart.png` |
 | `--lang` | `en` or `pt` (default: system language) |
 
-Output files are written next to the recording.
+Output files are written next to the recording. The CSV has one line per captured frame with the columns `frame, time_s, changed_pixels, new_image, static, fps, frametime_ms, stutter`.
 
 ## Recording guidelines (OBS)
 
@@ -78,7 +96,7 @@ Repeated frames must remain practically identical after compression.
 - **Compressed (validated):** *Advanced* output mode, **NVENC HEVC**, **CQP 16–18**, MKV container. In a 4K30 capture test, repeated frames showed 0–2 changed pixels and new frames hundreds to millions, far from the default threshold of 20.
 - Capture source with **Limited** color range, Rec. 709, and HDR disabled on the source device.
 
-Validate each setup with a control clip: a few seconds of gameplay running above the capture rate (should report a constant FPS equal to the capture rate) and a few seconds of a fully static screen (should report close to 0).
+Validate each setup with a control clip: a few seconds of gameplay running above the capture rate (should report a constant FPS equal to the capture rate) and a few seconds of a fully static screen (should be reported as a static interval).
 
 ## Building from source
 
@@ -103,7 +121,8 @@ The integration tests generate synthetic lossless videos with a known frame rate
 - Decoding is delegated to an `ffmpeg` subprocess that outputs raw BGR24 frames; no FFmpeg libraries are linked.
 - The grayscale conversion uses BT.601 weights in 15-bit fixed point, bit-exact with OpenCV's `COLOR_BGR2GRAY`.
 - Hardware decoding uses NVDEC (`-hwaccel cuda`). Decoded frames are converted to the stream's native pixel format before the BGR conversion, which makes the output bit-identical to software decoding. If NVDEC is unavailable, decoding falls back to the CPU.
-- Decoding, analysis and overlay rendering/encoding run on separate threads; the per-frame metric is parallelized with Rayon.
+- Analysis runs in two passes when an overlay is requested: the first detects new images, the second decodes the recording again and draws the overlay with the complete timeline, so static intervals are marked from their first frame.
+- Decoding, analysis, overlay drawing and encoding run on separate threads; the per-frame metric is parallelized with Rayon.
 
 ## License
 
