@@ -27,6 +27,7 @@ Tool that measures the real frame rate of games and other rendered content from 
 - **Subprocesses** use `CREATE_NO_WINDOW` on Windows. FFmpeg next to the executable takes precedence over `PATH`.
 - **FFmpeg is not bundled or versioned.** Full builds are ~217 MB per executable, above GitHub's 100 MB file limit. Users install it separately (README, "Installation"). The GPLv3 builds are redistributable if a release archive is ever added.
 - **`release/`** holds the prebuilt Windows executables and is versioned. After a change, rebuild with `cargo build --release` and copy both `.exe` files from the target directory into `release/`.
+- **Licensing:** MIT. `THIRD_PARTY_NOTICES.md` lists the embedded fonts (license texts in `licenses/`) and the crates linked into the Windows executables. Regenerate the crate table from `cargo metadata --filter-platform x86_64-pc-windows-msvc` (normal dependencies reachable from the root) when dependencies change; the project license must stay compatible with all of them.
 - **Out of scope by owner decision:** automatic static-scene detection and percentile-based pause filtering.
 
 ## Performance notes

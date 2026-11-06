@@ -104,3 +104,7 @@ The integration tests generate synthetic lossless videos with a known frame rate
 - The grayscale conversion uses BT.601 weights in 15-bit fixed point, bit-exact with OpenCV's `COLOR_BGR2GRAY`.
 - Hardware decoding uses NVDEC (`-hwaccel cuda`). Decoded frames are converted to the stream's native pixel format before the BGR conversion, which makes the output bit-identical to software decoding. If NVDEC is unavailable, decoding falls back to the CPU.
 - Decoding, analysis and overlay rendering/encoding run on separate threads; the per-frame metric is parallelized with Rayon.
+
+## License
+
+Released under the [MIT License](LICENSE). Bundled fonts and linked crates are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
