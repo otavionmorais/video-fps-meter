@@ -7,8 +7,8 @@
 //! 3. **Overlay pass** (optional): the recording is decoded again in its
 //!    native planar YUV format, the overlay is blended with the complete
 //!    timeline (so static intervals are marked from their first frame) and
-//!    the result is encoded losslessly. Pixels outside the overlay stay
-//!    bit-identical to the source.
+//!    the result is encoded as high-quality 10-bit HEVC or losslessly (see
+//!    [`OverlayQuality`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,7 +16,7 @@ use std::sync::mpsc::{Sender, SyncSender, channel, sync_channel};
 use std::thread::{self, JoinHandle};
 
 use crate::decode::{DecodeParams, Decoder};
-use crate::encode::{EncodeParams, Encoder, nvenc_lossless_available};
+use crate::encode::{EncodeParams, Encoder, OverlayQuality, nvenc_available, output_pix_fmt};
 use crate::i18n::{Lang, Strings};
 use crate::metric::gray_and_count;
 use crate::overlay::{Overlay, OverlayElements};
@@ -52,8 +52,10 @@ pub struct Options {
     pub overlay: Option<PathBuf>,
     /// Elements drawn in the overlay video.
     pub overlay_elements: OverlayElements,
-    /// Encode the overlay with NVIDIA NVENC (lossless HEVC), falling back to
-    /// lossless x264.
+    /// How the overlay video is encoded.
+    pub overlay_quality: OverlayQuality,
+    /// Encode the overlay with NVIDIA NVENC when available, falling back to
+    /// the CPU (x265 for high quality, x264 for lossless).
     pub nvenc: bool,
     /// Let FFmpeg decode on the GPU when possible.
     pub hw_decode: bool,
@@ -71,7 +73,8 @@ impl Default for Options {
             stutter_factor: DEFAULT_STUTTER_FACTOR,
             overlay: None,
             overlay_elements: OverlayElements::default(),
-            nvenc: false,
+            overlay_quality: OverlayQuality::default(),
+            nvenc: true,
             hw_decode: true,
             lang: Lang::default(),
         }
@@ -239,15 +242,24 @@ pub fn analyze(
         && !result.rows.is_empty()
     {
         let layout = overlay_layout(&info, strings, &mut result.warnings);
-        let nvenc = options.nvenc && nvenc_lossless_available(&layout.pix_fmt);
+        let quality = options.overlay_quality;
+        let nvenc =
+            options.nvenc && nvenc_available(&output_pix_fmt(&layout.pix_fmt, quality, true), quality);
         if options.nvenc && !nvenc {
-            result.warnings.push(strings.nvenc_unavailable.to_owned());
+            let warning = match quality {
+                OverlayQuality::High => strings.nvenc_unavailable_high,
+                OverlayQuality::Lossless => strings.nvenc_unavailable_lossless,
+            };
+            result.warnings.push(warning.to_owned());
         }
+        let encoded_pix_fmt = output_pix_fmt(&layout.pix_fmt, quality, nvenc);
         let encode = EncodeParams {
             destination,
             original: path,
             info: &info,
             pix_fmt: &layout.pix_fmt,
+            output_pix_fmt: &encoded_pix_fmt,
+            quality,
             start_s: options.start_s,
             duration_s: end_s.map(|end| end - options.start_s),
             nvenc,

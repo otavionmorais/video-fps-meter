@@ -5,7 +5,9 @@ use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
 use clap::{Parser, ValueEnum};
-use video_fps_meter::{Lang, Options, OutputPaths, OverlayElements, Stage, analyze, save_outputs, summarize};
+use video_fps_meter::{
+    Lang, Options, OutputPaths, OverlayElements, OverlayQuality, Stage, analyze, save_outputs, summarize,
+};
 
 /// Measures the real frame rate of a game or other rendered content from a video recording.
 #[derive(Parser)]
@@ -50,8 +52,18 @@ struct Cli {
     #[arg(long, value_enum, value_delimiter = ',')]
     overlay_hide: Vec<OverlayElement>,
 
-    /// Encode the overlay with lossless HEVC NVENC (falls back to lossless x264).
+    /// Encode the overlay losslessly: pixels outside the overlay stay
+    /// bit-identical, but the file is about 6x larger than the recording.
+    /// By default the overlay is encoded as high-quality 10-bit HEVC.
     #[arg(long)]
+    lossless: bool,
+
+    /// Encode the overlay on the CPU instead of NVIDIA NVENC.
+    #[arg(long)]
+    no_nvenc: bool,
+
+    /// Accepted for compatibility with 1.0; NVENC is now used by default.
+    #[arg(long, hide = true)]
     nvenc: bool,
 
     /// Decode on the CPU only.
@@ -114,7 +126,8 @@ fn main() -> ExitCode {
         stutter_factor: cli.stutter_factor,
         overlay: overlay.clone(),
         overlay_elements,
-        nvenc: cli.nvenc,
+        overlay_quality: if cli.lossless { OverlayQuality::Lossless } else { OverlayQuality::High },
+        nvenc: !cli.no_nvenc,
         hw_decode: !cli.no_hw_decode,
         lang,
     };

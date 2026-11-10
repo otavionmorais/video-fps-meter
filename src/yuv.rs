@@ -1,10 +1,9 @@
 //! Planar YUV frames: plane layout and blending of RGBA overlay layers.
 //!
 //! The overlay video is produced from the decoder's native planar YUV
-//! frames and encoded losslessly in the same pixel format, so every pixel
+//! frames. Only covered pixels (and, with chroma subsampling, the chroma
+//! samples they share) are modified, so with lossless encoding every pixel
 //! the overlay does not cover stays bit-identical to the decoded source.
-//! Only covered pixels (and, with chroma subsampling, the chroma samples
-//! they share) are modified.
 
 use crate::probe::ColorTags;
 

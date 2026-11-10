@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicBool;
 
-use video_fps_meter::{Analysis, Lang, Options, OutputPaths, analyze, save_outputs, summarize};
+use video_fps_meter::{
+    Analysis, Lang, Options, OutputPaths, OverlayQuality, analyze, save_outputs, summarize,
+};
 
 const WIDTH: usize = 320;
 const HEIGHT: usize = 180;
@@ -267,7 +269,13 @@ fn assert_lossless_overlay(name: &str, pix_fmt: &str, nvenc: bool) {
     let destination = OutputPaths::for_video(&source).overlay;
     assert_eq!(destination.extension().unwrap(), "mkv");
     let _ = std::fs::remove_file(&destination);
-    let analysis = run(&source, Options { overlay: Some(destination.clone()), nvenc, ..Options::default() });
+    let options = Options {
+        overlay: Some(destination.clone()),
+        overlay_quality: OverlayQuality::Lossless,
+        nvenc,
+        ..Options::default()
+    };
+    let analysis = run(&source, options);
     assert_eq!(analysis.rows.len(), 90);
 
     // The overlay covers the left part of the frame; the right part must be
@@ -302,4 +310,46 @@ fn overlay_is_lossless_outside_the_overlay_10bit() {
 #[test]
 fn overlay_is_lossless_with_nvenc_or_fallback() {
     assert_lossless_overlay("lossless_nvenc", "yuv420p", true);
+}
+
+/// Peak signal-to-noise ratio between two 8-bit buffers, in dB.
+fn psnr(a: &[u8], b: &[u8]) -> f64 {
+    assert_eq!(a.len(), b.len());
+    let mse =
+        a.iter().zip(b).map(|(&x, &y)| (f64::from(x) - f64::from(y)).powi(2)).sum::<f64>() / a.len() as f64;
+    if mse == 0.0 { f64::INFINITY } else { 10.0 * (255.0 * 255.0 / mse).log10() }
+}
+
+fn assert_high_quality_overlay(name: &str, nvenc: bool) {
+    let source = source_with_audio(name, "yuv420p");
+    let destination = OutputPaths::for_video(&source).overlay;
+    let _ = std::fs::remove_file(&destination);
+    let analysis = run(&source, Options { overlay: Some(destination.clone()), nvenc, ..Options::default() });
+    assert_eq!(analysis.rows.len(), 90);
+
+    // Outside the overlay the video is a close match to the source.
+    let untouched = "152:180:168:0";
+    let original = decoded(&source, "yuv420p", Some(untouched));
+    let rendered = decoded(&destination, "yuv420p", Some(untouched));
+    let quality = psnr(&original, &rendered);
+    assert!(quality > 45.0, "PSNR outside the overlay is {quality:.1} dB");
+
+    assert_eq!(stream_field(&destination, "v:0", "codec_name"), "hevc");
+    let pix_fmt = stream_field(&destination, "v:0", "pix_fmt");
+    assert!(pix_fmt == "yuv420p10le" || pix_fmt == "p010le", "unexpected pixel format {pix_fmt}");
+    assert_eq!(stream_field(&destination, "v:0", "color_range"), stream_field(&source, "v:0", "color_range"));
+    assert_eq!(stream_field(&destination, "v:0", "color_space"), "bt709");
+    let audio = audio_packet_hashes(&source);
+    assert_eq!(audio_packet_hashes(&destination), audio, "audio was not copied unchanged");
+    assert_eq!(probe_frame_count(&destination), "90");
+}
+
+#[test]
+fn high_quality_overlay_on_the_cpu() {
+    assert_high_quality_overlay("high_cpu", false);
+}
+
+#[test]
+fn high_quality_overlay_with_nvenc_or_fallback() {
+    assert_high_quality_overlay("high_nvenc", true);
 }

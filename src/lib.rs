@@ -24,6 +24,7 @@ pub mod timeline;
 pub mod yuv;
 
 pub use analysis::{Analysis, Options, Progress, Row, Stage, analyze};
+pub use encode::OverlayQuality;
 pub use i18n::Lang;
 pub use output::{OutputPaths, save_outputs};
 pub use overlay::OverlayElements;

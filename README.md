@@ -13,7 +13,7 @@ From that, the tool reports:
 - 1% low FPS
 - Potential stutters: frametime spikes, with count, rate per minute and the worst one
 - Static intervals (menus, pauses, loading screens), excluded from all statistics
-- Optional overlay video with the FPS counter, running statistics (average, 1% low), a potential-stutter alert and FPS/frametime graphs, each of which can be turned off, without any quality loss (see below)
+- Optional overlay video with the FPS counter, running statistics (average, 1% low), a potential-stutter alert and FPS/frametime graphs, each of which can be turned off, at visually identical quality and about the size of the recording (see below)
 
 ### Static intervals
 
@@ -31,13 +31,25 @@ A stutter is a frametime at least **2.5×** the median of the previous 20 framet
 
 ### Overlay video
 
-The overlay video is lossless with respect to the recording:
+The overlay is blended directly into the recording's YUV planes (no RGB round trip). Burning it in requires re-encoding every frame, so two quality levels are available:
 
-- Every pixel the overlay does not cover is **bit-identical** to the decoded recording. The overlay is blended directly into the recording's YUV planes (no RGB round trip) and the video is encoded losslessly in the same pixel format (HEVC NVENC with `--nvenc`, x264 lossless otherwise).
-- Audio tracks are **copied unchanged**.
-- The container (MKV, MP4 or MOV), pixel format and color tags of the recording are kept.
+| Quality | Encoding | Size | Fidelity outside the overlay |
+|---|---|---|---|
+| **High** (default) | 10-bit HEVC: NVENC QP 8, or x265 CRF 8 on the CPU | About 1–1.5× the recording | Visually identical |
+| **Lossless** (`--lossless`) | Same pixel format: HEVC NVENC lossless, or x264 QP 0 on the CPU | About 6× the recording | Bit-identical |
 
-Lossless video is large: several times the size of the recording (about 1.3 GB for 30 s of 4K30 in testing). Supported source formats are planar YUV 4:2:0, 4:2:2 and 4:4:4 at 8, 10 or 12 bits, which covers recordings from OBS and capture cards; other formats are converted to 4:4:4 and a warning is shown.
+In both, audio tracks are **copied unchanged** and the container (MKV, MP4 or MOV) and color tags of the recording are kept.
+
+Measured on 1440p60 NVENC HEVC recordings (RTX 4060), outside the overlay area:
+
+| Recording | High quality size | VMAF (identical copy) | PSNR | Lossless size |
+|---|---|---|---|---|
+| 8-bit, CQP 16, 30 s | 1.02× | 97.8 (98.6) | 53.2 dB | 6.4× |
+| 10-bit, CQP 16, 99 s | 1.48× | 97.8 (98.6) | 55.7 dB | — |
+
+The quantizer is fixed, so lighter recordings produce a larger relative size. Higher settings (QP 6, preset P7, `tune uhq`) were tested and did not improve the result: above this level the encoder only reproduces the compression noise of the recording. Encoding 8-bit sources at 10 bits gave a smaller and more accurate file than 8 bits at the same quantizer. Uploads to YouTube are re-encoded at a much lower bitrate, so the lossless mode is only useful when exact pixels are required.
+
+Supported source formats are planar YUV 4:2:0, 4:2:2 and 4:4:4 at 8, 10 or 12 bits, which covers recordings from OBS and capture cards; other formats are converted to 4:4:4 and a warning is shown. NVENC is used for 4:2:0 sources; other chroma formats are encoded on the CPU.
 
 ### Known limitations
 
@@ -67,7 +79,7 @@ A copy of FFmpeg next to the executables takes precedence over the one on `PATH`
 
 ### GPU acceleration (optional)
 
-With an NVIDIA GPU and an FFmpeg build that includes NVDEC/NVENC (the Windows builds above do), decoding runs on the GPU automatically and the overlay can be encoded losslessly on the GPU with `--nvenc` / the **Use GPU (NVENC)** option. Without one, decoding and encoding run on the CPU.
+With an NVIDIA GPU and an FFmpeg build that includes NVDEC/NVENC (the Windows builds above do), decoding and overlay encoding run on the GPU automatically (`--no-hw-decode` and `--no-nvenc` / the **Use GPU (NVENC)** option turn them off). Without one, decoding and encoding run on the CPU; high-quality encoding with x265 is then about 3× slower than real time at 1440p60.
 
 ## Usage
 
@@ -79,14 +91,15 @@ Run `video-fps-meter-gui`, choose a recording, select the outputs and click **An
 
 ```bash
 video-fps-meter recording.mkv
-video-fps-meter recording.mkv --overlay --nvenc --target 30
+video-fps-meter recording.mkv --overlay --target 30
 video-fps-meter recording.mkv --start 10 --end 70 --no-csv --lang pt
 ```
 
 | Option | Description |
 |---|---|
-| `--overlay` | Write `<name>_overlay.<ext>` (lossless, same container as the recording) |
-| `--nvenc` | Encode the overlay with lossless HEVC NVENC (falls back to lossless x264 when unavailable) |
+| `--overlay` | Write `<name>_overlay.<ext>` (high-quality 10-bit HEVC, same container as the recording) |
+| `--lossless` | Encode the overlay losslessly (bit-identical outside the overlay, about 6× larger) |
+| `--no-nvenc` | Encode the overlay on the CPU (x265, or x264 when lossless) instead of NVENC |
 | `--overlay-hide` | Overlay elements to leave out, comma-separated: `fps-counter`, `stats`, `stutter-alert`, `fps-graph`, `frametime-graph` |
 | `--target` | Target frame rate of the game; the overlay turns red below it (default 30) |
 | `--start` / `--end` | Span to analyze, in seconds |
@@ -104,8 +117,10 @@ Output files are written next to the recording. The CSV has one line per capture
 Repeated frames must remain practically identical after compression.
 
 - **Lossless (most reliable):** *Simple* output mode, *Lossless* quality (UtVideo). Produces several GB per minute.
-- **Compressed (validated):** *Advanced* output mode, **NVENC HEVC**, **CQP 16–18**, MKV container. In a 4K30 capture test, repeated frames showed 0–2 changed pixels and new frames hundreds to millions, far from the default threshold of 20.
-- Capture source with **Limited** color range, Rec. 709, and HDR disabled on the source device.
+- **Compressed (validated):** *Advanced* output mode, MKV container, **NVENC HEVC**, rate control **CQP 16**, preset **P5**, tuning **High Quality**, **single pass**, **look-ahead off**, **adaptive quantization off**, profile **main10** with color format **P010** (*Advanced → Video*). On a 1440p60 recording with these settings, repeated frames showed 0–1 changed pixels and new frames 47 or more. With adaptive quantization, look-ahead, two-pass and 8-bit enabled, repeated frames reached 18 changed pixels and new frames started at 21, leaving almost no margin around the default threshold of 20.
+- OBS frame rate equal to the source output (for example 60, not 59.94, for a 60 Hz console), capture source set to a fixed resolution and frame rate, buffering off, uncompressed (NV12/YUY2) rather than MJPEG when available.
+- Source device at a fixed refresh rate with **VRR off**, and HDR off.
+- Capture source with **Limited** color range and Rec. 709.
 
 Validate each setup with a control clip: a few seconds of gameplay running above the capture rate (should report a constant FPS equal to the capture rate) and a few seconds of a fully static screen (should be reported as a static interval).
 
