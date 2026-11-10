@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
 use clap::{Parser, ValueEnum};
-use video_fps_meter::{Lang, Options, OutputPaths, Stage, analyze, save_outputs, summarize};
+use video_fps_meter::{Lang, Options, OutputPaths, OverlayElements, Stage, analyze, save_outputs, summarize};
 
 /// Measures the real frame rate of a game or other rendered content from a video recording.
 #[derive(Parser)]
@@ -46,6 +46,10 @@ struct Cli {
     #[arg(long)]
     overlay: bool,
 
+    /// Overlay elements to leave out (comma-separated).
+    #[arg(long, value_enum, value_delimiter = ',')]
+    overlay_hide: Vec<OverlayElement>,
+
     /// Encode the overlay with lossless HEVC NVENC (falls back to lossless x264).
     #[arg(long)]
     nvenc: bool,
@@ -67,6 +71,18 @@ struct Cli {
     lang: Option<LangArg>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum OverlayElement {
+    /// Large FPS counter.
+    FpsCounter,
+    /// Running average FPS and 1% low.
+    Stats,
+    /// Frametime of each detected stutter, labeled as a potential stutter.
+    StutterAlert,
+    FpsGraph,
+    FrametimeGraph,
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum LangArg {
     En,
@@ -81,6 +97,14 @@ fn main() -> ExitCode {
         None => Lang::detect(),
     };
     let overlay = cli.overlay.then(|| OutputPaths::for_video(&cli.video).overlay);
+    let shown = |element| !cli.overlay_hide.contains(&element);
+    let overlay_elements = OverlayElements {
+        fps_counter: shown(OverlayElement::FpsCounter),
+        stats: shown(OverlayElement::Stats),
+        stutter_alert: shown(OverlayElement::StutterAlert),
+        fps_graph: shown(OverlayElement::FpsGraph),
+        frametime_graph: shown(OverlayElement::FrametimeGraph),
+    };
     let options = Options {
         threshold: cli.threshold,
         start_s: cli.start,
@@ -89,6 +113,7 @@ fn main() -> ExitCode {
         static_ms: cli.static_ms,
         stutter_factor: cli.stutter_factor,
         overlay: overlay.clone(),
+        overlay_elements,
         nvenc: cli.nvenc,
         hw_decode: !cli.no_hw_decode,
         lang,

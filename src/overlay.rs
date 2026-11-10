@@ -1,9 +1,12 @@
 //! FPS counter, running statistics and FPS/frametime graphs drawn over the
 //! video frames.
 //!
-//! Inside static intervals the counter shows a dash and the graphs are
-//! interrupted. Layout and sizes are defined for 1080p and scaled with the
-//! frame height.
+//! Each element can be turned off with [`OverlayElements`]; the remaining
+//! ones close up. Inside static intervals the counter shows a dash and the
+//! graphs are interrupted. A detected stutter is not counted on screen
+//! (false positives are common in recordings); its frametime is shown for a
+//! moment with a "potential stutter" label instead. Layout and sizes are
+//! defined for 1080p and scaled with the frame height.
 
 use std::collections::VecDeque;
 
@@ -34,9 +37,48 @@ const TEXT_OUTLINE: f32 = 3.0;
 const STUTTER_HIGHLIGHT_S: f64 = 1.5;
 /// Shown instead of a value that is not available.
 const NO_VALUE: &str = "—";
+/// Top-left corner of the top panels, in pixels at 1080p.
+const TOP_MARGIN: f32 = 30.0;
+/// Left edge of text inside the top panels, in pixels at 1080p.
+const TEXT_LEFT: f32 = 45.0;
+/// Gap between the main top panel and the stutter alert, in pixels at 1080p.
+const PANEL_GAP: f32 = 10.0;
+/// Height of each graph, in pixels at 1080p.
+const GRAPH_HEIGHT: f32 = 150.0;
+/// Distance from the bottom of the frame to the top of the lower graph, and
+/// between the tops of the two graphs, in pixels at 1080p.
+const GRAPH_BOTTOM: f32 = 190.0;
+const GRAPH_SPACING: f32 = 210.0;
+
+/// Overlay elements to draw. All are on by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OverlayElements {
+    /// Large rolling FPS counter.
+    pub fps_counter: bool,
+    /// Running average FPS and 1% low.
+    pub stats: bool,
+    /// Frametime of the last stutter, labeled as a potential stutter.
+    pub stutter_alert: bool,
+    pub fps_graph: bool,
+    pub frametime_graph: bool,
+}
+
+impl Default for OverlayElements {
+    fn default() -> Self {
+        Self { fps_counter: true, stats: true, stutter_alert: true, fps_graph: true, frametime_graph: true }
+    }
+}
+
+impl OverlayElements {
+    /// Whether at least one element is drawn.
+    pub fn any(&self) -> bool {
+        self.fps_counter || self.stats || self.stutter_alert || self.fps_graph || self.frametime_graph
+    }
+}
 
 pub struct Overlay {
     strings: &'static Strings,
+    elements: OverlayElements,
     width: i32,
     height: i32,
     /// Frame height relative to 1080p.
@@ -52,31 +94,41 @@ pub struct Overlay {
     /// Last stutter and how many more frames it stays highlighted.
     stutter_highlight: Option<(f64, u32)>,
     font: Face<'static>,
-    layers: Vec<Layer>,
+    /// Counter, statistics and stutter alert.
+    top: Option<Layer>,
+    /// Graphs with their labels.
+    bottom: Option<Layer>,
     /// Layout of the frames the overlay is blended into.
     frame_layout: YuvLayout,
 }
 
 impl Overlay {
-    pub fn new(frame_layout: YuvLayout, capture_rate: f64, target_fps: f64, lang: Lang) -> Self {
+    pub fn new(
+        frame_layout: YuvLayout,
+        capture_rate: f64,
+        target_fps: f64,
+        lang: Lang,
+        elements: OverlayElements,
+    ) -> Self {
         let (width, height) = (frame_layout.width as u32, frame_layout.height as u32);
         let scale = height as f32 / 1080.0;
         let points = ((capture_rate * GRAPH_SECONDS).round_ties_even() as usize).max(2);
         let (w, h) = (width as i32, height as i32);
         let px = |v: f32| (v * scale) as i32;
         let graph_right = px(40.0) + (width as f64 * 0.45) as i32;
-        let layers = [
-            // FPS counter and running statistics.
-            (0, 0, px(460.0), px(230.0)),
-            // Both graphs with their labels.
-            (0, h - px(440.0), graph_right + px(50.0), h - px(20.0)),
-        ]
-        .into_iter()
-        .filter_map(|bounds| Layer::new(w, h, scale, bounds))
-        .collect();
+        let any_top = elements.fps_counter || elements.stats || elements.stutter_alert;
+        let top = any_top.then(|| Layer::new(w, h, scale, (0, 0, px(560.0), px(250.0)))).flatten();
+        let graphs = usize::from(elements.fps_graph) + usize::from(elements.frametime_graph);
+        let bottom = (graphs > 0)
+            .then(|| {
+                let top_y = h - px(GRAPH_BOTTOM + (graphs - 1) as f32 * GRAPH_SPACING + 40.0);
+                Layer::new(w, h, scale, (0, top_y, graph_right + px(50.0), h - px(20.0)))
+            })
+            .flatten();
 
         Self {
             strings: lang.strings(),
+            elements,
             width: w,
             height: h,
             scale,
@@ -88,7 +140,8 @@ impl Overlay {
             current_frametime: 1000.0 / capture_rate,
             stutter_highlight: None,
             font: Face::parse(epaint_default_fonts::HACK_REGULAR, 0).expect("bundled font is valid"),
-            layers,
+            top,
+            bottom,
             frame_layout,
         }
     }
@@ -117,70 +170,98 @@ impl Overlay {
     /// Draws the overlay for `row` onto a planar YUV frame in place. `stats` holds
     /// the statistics up to and including `row`.
     pub fn draw(&mut self, frame: &mut [u8], row: &Row, stats: &Stats) {
-        for layer in &mut self.layers {
-            layer.pixmap.fill(Color::TRANSPARENT);
-        }
         let s = self.scale;
         let px = |v: f32| (v * s) as i32;
         let target = self.target_fps;
         let strings = self.strings;
+        let elements = self.elements;
 
-        if let Some(top) = self.layers.first_mut() {
-            let (counter, color) = match row.fps.filter(|_| !row.is_static) {
-                Some(fps) => {
-                    (format!("FPS: {fps:.0}"), if fps < target - 0.5 { BAD_COLOR } else { TEXT_COLOR })
-                }
-                None => (format!("FPS: {NO_VALUE}"), TEXT_COLOR),
+        if let Some(top) = &mut self.top {
+            top.pixmap.fill(Color::TRANSPARENT);
+            // Baselines and panel bottom, in pixels at 1080p.
+            let counter_y = TOP_MARGIN + 65.0;
+            let stats_y = if elements.fps_counter { counter_y + 45.0 } else { TOP_MARGIN + 32.0 };
+            let main_bottom = match (elements.fps_counter, elements.stats) {
+                (_, true) => Some(stats_y + 22.0),
+                (true, false) => Some(counter_y + 25.0),
+                (false, false) => None,
             };
-            let value = |v: Option<f64>| v.map_or_else(|| NO_VALUE.to_owned(), |v| format!("{v:.1}"));
-            let averages = format!(
-                "{} {}   1% low {}",
-                strings.overlay_average,
-                value(stats.average_fps(self.capture_rate)),
-                value(stats.one_percent_low())
-            );
-            let stutters = format!("{} {}", strings.overlay_stutters, stats.stutters());
 
-            top.panel(px(30.0), px(30.0), px(400.0), px(170.0));
-            top.text(&self.font, &counter, px(45.0), px(95.0), 1.6 * s, color);
-            top.text(&self.font, &averages, px(45.0), px(140.0), 0.6 * s, TEXT_COLOR);
-            top.text(&self.font, &stutters, px(45.0), px(178.0), 0.6 * s, TEXT_COLOR);
-            if let Some((frametime, frames_left)) = self.stutter_highlight
+            if let Some(bottom) = main_bottom {
+                let width = if elements.stats { 400.0 } else { 260.0 };
+                top.panel(px(TOP_MARGIN), px(TOP_MARGIN), px(width), px(bottom - TOP_MARGIN));
+            }
+            if elements.fps_counter {
+                let (counter, color) = match row.fps.filter(|_| !row.is_static) {
+                    Some(fps) => {
+                        (format!("FPS: {fps:.0}"), if fps < target - 0.5 { BAD_COLOR } else { TEXT_COLOR })
+                    }
+                    None => (format!("FPS: {NO_VALUE}"), TEXT_COLOR),
+                };
+                top.text(&self.font, &counter, px(TEXT_LEFT), px(counter_y), 1.6 * s, color);
+            }
+            if elements.stats {
+                let value = |v: Option<f64>| v.map_or_else(|| NO_VALUE.to_owned(), |v| format!("{v:.1}"));
+                let averages = format!(
+                    "{} {}   1% low {}",
+                    strings.overlay_average,
+                    value(stats.average_fps(self.capture_rate)),
+                    value(stats.one_percent_low())
+                );
+                top.text(&self.font, &averages, px(TEXT_LEFT), px(stats_y), 0.6 * s, TEXT_COLOR);
+            }
+            if elements.stutter_alert
+                && let Some((frametime, frames_left)) = self.stutter_highlight
                 && frames_left > 0
             {
-                let x = px(45.0) + text_width(&self.font, &format!("{stutters}  "), 0.6 * s) as i32;
-                top.text(&self.font, &format!("+{frametime:.1} ms"), x, px(178.0), 0.6 * s, BAD_COLOR);
+                let alert = format!("+{frametime:.1} ms  {}", strings.overlay_potential_stutter);
+                let panel_top = main_bottom.map_or(TOP_MARGIN, |bottom| bottom + PANEL_GAP);
+                let padding = TEXT_LEFT - TOP_MARGIN;
+                let width = text_width(&self.font, &alert, 0.6 * s) as i32 + 2 * px(padding);
+                top.panel(px(TOP_MARGIN), px(panel_top), width, px(54.0));
+                top.text(&self.font, &alert, px(TEXT_LEFT), px(panel_top + 32.0), 0.6 * s, BAD_COLOR);
             }
+            blend(&self.frame_layout, frame, top);
         }
 
-        if let Some(bottom) = self.layers.get_mut(1) {
-            let (w, h, x) = ((self.width as f64 * 0.45) as i32, px(150.0), px(40.0));
+        if let Some(bottom) = &mut self.bottom {
+            bottom.pixmap.fill(Color::TRANSPARENT);
+            let (w, h, x) = ((self.width as f64 * 0.45) as i32, px(GRAPH_HEIGHT), px(40.0));
+            // The lower graph sits at the bottom; the other one, if any, above it.
+            let graph_y =
+                |above: bool| self.height - px(GRAPH_BOTTOM + if above { GRAPH_SPACING } else { 0.0 });
             let fps_ceiling = if target <= 60.0 { 60.0 } else { 120.0 };
             let fps_marks = [0.0, fps_ceiling / 4.0, fps_ceiling / 2.0, fps_ceiling * 3.0 / 4.0, fps_ceiling];
             let mut graph = Graph { layer: bottom, font: &self.font, scale: s, points: self.points };
-            graph.draw(
-                &self.fps_history,
-                (x, self.height - px(400.0), w, h),
-                (0.0, fps_ceiling),
-                &fps_marks,
-                self.strings.overlay_fps,
-                |v| v < target - 0.5,
-            );
-            graph.draw(
-                &self.frametime_history,
-                (x, self.height - px(190.0), w, h),
-                (0.0, 100.0),
-                &[16.7, 33.3, 50.0, 100.0],
-                self.strings.overlay_frametime,
-                |v| v > 1000.0 / target + 1.0,
-            );
-        }
-
-        for layer in &self.layers {
-            let (w, h) = (layer.pixmap.width() as usize, layer.pixmap.height() as usize);
-            self.frame_layout.blend(frame, layer.x as usize, layer.y as usize, w, h, layer.pixmap.data());
+            if elements.fps_graph {
+                graph.draw(
+                    &self.fps_history,
+                    (x, graph_y(elements.frametime_graph), w, h),
+                    (0.0, fps_ceiling),
+                    &fps_marks,
+                    strings.overlay_fps,
+                    |v| v < target - 0.5,
+                );
+            }
+            if elements.frametime_graph {
+                graph.draw(
+                    &self.frametime_history,
+                    (x, graph_y(false), w, h),
+                    (0.0, 100.0),
+                    &[16.7, 33.3, 50.0, 100.0],
+                    strings.overlay_frametime,
+                    |v| v > 1000.0 / target + 1.0,
+                );
+            }
+            blend(&self.frame_layout, frame, bottom);
         }
     }
+}
+
+/// Blends a drawn layer into a planar YUV frame.
+fn blend(frame_layout: &YuvLayout, frame: &mut [u8], layer: &Layer) {
+    let (w, h) = (layer.pixmap.width() as usize, layer.pixmap.height() as usize);
+    frame_layout.blend(frame, layer.x as usize, layer.y as usize, w, h, layer.pixmap.data());
 }
 
 fn push_bounded(history: &mut VecDeque<Option<f64>>, value: Option<f64>, capacity: usize) {
@@ -436,7 +517,14 @@ mod tests {
         for (w, h) in [(320u32, 180u32), (1920, 1080), (64, 36)] {
             let layout = YuvLayout::new("yuv420p", w, h, &crate::probe::ColorTags::default()).unwrap();
             let mut frame = vec![128u8; layout.frame_len()];
-            let mut overlay = Overlay::new(layout, 60.0, 30.0, Lang::En);
+            let elements = [
+                OverlayElements::default(),
+                OverlayElements { fps_counter: false, fps_graph: false, ..OverlayElements::default() },
+                OverlayElements { stats: false, frametime_graph: false, ..OverlayElements::default() },
+                OverlayElements { fps_counter: false, stats: false, ..OverlayElements::default() },
+            ];
+            let mut overlays: Vec<Overlay> =
+                elements.into_iter().map(|e| Overlay::new(layout.clone(), 60.0, 30.0, Lang::En, e)).collect();
             let mut stats = Stats::new();
             for i in 0..90 {
                 let row = Row {
@@ -448,8 +536,10 @@ mod tests {
                     ..Row::default()
                 };
                 stats.push(&row);
-                overlay.record(&row);
-                overlay.draw(&mut frame, &row, &stats);
+                for overlay in &mut overlays {
+                    overlay.record(&row);
+                    overlay.draw(&mut frame, &row, &stats);
+                }
             }
         }
     }

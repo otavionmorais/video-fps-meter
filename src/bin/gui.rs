@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
 use eframe::egui;
-use video_fps_meter::{Lang, Options, OutputPaths, analyze, save_outputs, summarize};
+use video_fps_meter::{Lang, Options, OutputPaths, OverlayElements, analyze, save_outputs, summarize};
 
 const VIDEO_EXTENSIONS: [&str; 4] = ["mkv", "mp4", "avi", "mov"];
 
@@ -24,6 +24,12 @@ struct Texts {
     nvenc: &'static str,
     csv: &'static str,
     chart: &'static str,
+    overlay_elements: &'static str,
+    fps_counter: &'static str,
+    stats: &'static str,
+    stutter_alert: &'static str,
+    fps_graph: &'static str,
+    frametime_graph: &'static str,
     target: &'static str,
     start: &'static str,
     end: &'static str,
@@ -55,6 +61,12 @@ static EN: Texts = Texts {
     nvenc: "Use GPU (NVENC)",
     csv: "Generate CSV",
     chart: "Generate chart (PNG)",
+    overlay_elements: "Overlay elements",
+    fps_counter: "FPS counter",
+    stats: "Average and 1% low",
+    stutter_alert: "Potential stutter alert",
+    fps_graph: "FPS graph",
+    frametime_graph: "Frametime graph",
     target: "Target FPS",
     start: "Start (s)",
     end: "End (s)",
@@ -86,6 +98,12 @@ static PT: Texts = Texts {
     nvenc: "Usar placa de vídeo (NVENC)",
     csv: "Gerar CSV",
     chart: "Gerar gráfico (PNG)",
+    overlay_elements: "Elementos do overlay",
+    fps_counter: "Contador de FPS",
+    stats: "Média e 1% low",
+    stutter_alert: "Aviso de possível stutter",
+    fps_graph: "Gráfico de FPS",
+    frametime_graph: "Gráfico de frametime",
     target: "FPS alvo",
     start: "Início (s)",
     end: "Fim (s)",
@@ -144,6 +162,7 @@ struct App {
     nvenc: bool,
     csv: bool,
     chart: bool,
+    overlay_elements: OverlayElements,
     target: String,
     start: String,
     end: String,
@@ -165,6 +184,7 @@ impl App {
             nvenc: true,
             csv: true,
             chart: true,
+            overlay_elements: OverlayElements::default(),
             target: "30".into(),
             start: String::new(),
             end: String::new(),
@@ -227,6 +247,7 @@ impl App {
             static_ms,
             stutter_factor,
             overlay: self.overlay.then(|| OutputPaths::for_video(&video).overlay),
+            overlay_elements: self.overlay_elements,
             nvenc: self.nvenc,
             lang: self.lang,
             ..Options::default()
@@ -415,6 +436,24 @@ impl eframe::App for App {
 
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.set_width(ui.available_width());
+                ui.add_enabled_ui(!working && self.overlay, |ui| {
+                    ui.strong(t.overlay_elements);
+                    let e = &mut self.overlay_elements;
+                    egui::Grid::new("overlay_elements").num_columns(2).spacing([40.0, 6.0]).show(ui, |ui| {
+                        ui.checkbox(&mut e.fps_counter, t.fps_counter);
+                        ui.checkbox(&mut e.fps_graph, t.fps_graph);
+                        ui.end_row();
+                        ui.checkbox(&mut e.stats, t.stats);
+                        ui.checkbox(&mut e.frametime_graph, t.frametime_graph);
+                        ui.end_row();
+                        ui.checkbox(&mut e.stutter_alert, t.stutter_alert);
+                        ui.end_row();
+                    });
+                });
+            });
+
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.set_width(ui.available_width());
                 ui.add_enabled_ui(!working, |ui| {
                     ui.columns(5, |columns| {
                         let fields = [
@@ -483,8 +522,8 @@ impl eframe::App for App {
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([640.0, 620.0])
-            .with_min_inner_size([560.0, 560.0]),
+            .with_inner_size([640.0, 720.0])
+            .with_min_inner_size([560.0, 660.0]),
         ..Default::default()
     };
     eframe::run_native(

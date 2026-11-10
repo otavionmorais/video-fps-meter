@@ -19,7 +19,7 @@ use crate::decode::{DecodeParams, Decoder};
 use crate::encode::{EncodeParams, Encoder, nvenc_lossless_available};
 use crate::i18n::{Lang, Strings};
 use crate::metric::gray_and_count;
-use crate::overlay::Overlay;
+use crate::overlay::{Overlay, OverlayElements};
 use crate::probe::{ProbeError, VideoInfo, probe};
 use crate::stats::Stats;
 use crate::timeline::{self, DEFAULT_STATIC_MS, DEFAULT_STUTTER_FACTOR, StaticInterval, Stutter};
@@ -50,6 +50,8 @@ pub struct Options {
     pub stutter_factor: f64,
     /// Destination of the overlay video. `None` skips the overlay.
     pub overlay: Option<PathBuf>,
+    /// Elements drawn in the overlay video.
+    pub overlay_elements: OverlayElements,
     /// Encode the overlay with NVIDIA NVENC (lossless HEVC), falling back to
     /// lossless x264.
     pub nvenc: bool,
@@ -68,6 +70,7 @@ impl Default for Options {
             static_ms: DEFAULT_STATIC_MS,
             stutter_factor: DEFAULT_STUTTER_FACTOR,
             overlay: None,
+            overlay_elements: OverlayElements::default(),
             nvenc: false,
             hw_decode: true,
             lang: Lang::default(),
@@ -252,7 +255,8 @@ pub fn analyze(
         let decode =
             DecodeParams { output_pix_fmt: &layout.pix_fmt, frame_len: layout.frame_len(), ..params };
         let total = result.rows.len() as f64;
-        let overlay = Overlay::new(layout.clone(), rate, options.target_fps, options.lang);
+        let overlay =
+            Overlay::new(layout.clone(), rate, options.target_fps, options.lang, options.overlay_elements);
         let completed = render_overlay(&decode, &encode, overlay, &result.rows, strings, cancel, |done| {
             on_progress(Progress {
                 stage: Stage::Overlay,

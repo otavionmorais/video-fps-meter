@@ -11,9 +11,9 @@ From that, the tool reports:
 - Real average FPS
 - Frametime of each image (how long it stayed on screen)
 - 1% low FPS
-- Stutters: frametime spikes, with count, rate per minute and the worst one
+- Potential stutters: frametime spikes, with count, rate per minute and the worst one
 - Static intervals (menus, pauses, loading screens), excluded from all statistics
-- Optional overlay video with the FPS counter, running statistics (average, 1% low, stutters) and FPS/frametime graphs, without any quality loss (see below)
+- Optional overlay video with the FPS counter, running statistics (average, 1% low), a potential-stutter alert and FPS/frametime graphs, each of which can be turned off, without any quality loss (see below)
 
 ### Static intervals
 
@@ -27,7 +27,7 @@ Static intervals are excluded from the average FPS, frametimes, 1% low and stutt
 
 ### Stutters
 
-A stutter is a frametime at least **2.5×** the median of the previous 20 frametimes (`--stutter-factor`). With the default, an image that stays on screen for two or more extra refreshes is a stutter (100 ms at a steady 30 fps, 50 ms at 60 fps), while a single late frame is not; it still counts toward the average FPS and 1% low. A factor of 1.5 also reports single late frames. Each stutter is highlighted in the overlay for 1.5 s, flagged in the CSV and marked in red in the chart.
+A stutter is a frametime at least **2.5×** the median of the previous 20 frametimes (`--stutter-factor`). With the default, an image that stays on screen for two or more extra refreshes is a stutter (100 ms at a steady 30 fps, 50 ms at 60 fps), while a single late frame is not; it still counts toward the average FPS and 1% low. A factor of 1.5 also reports single late frames. Detection on recordings produces false positives, so the overlay shows no stutter count: each stutter's frametime appears for 1.5 s with a *potential stutter* label. Stutters are counted in the summary, flagged in the CSV and marked in red in the chart.
 
 ### Overlay video
 
@@ -87,6 +87,7 @@ video-fps-meter recording.mkv --start 10 --end 70 --no-csv --lang pt
 |---|---|
 | `--overlay` | Write `<name>_overlay.<ext>` (lossless, same container as the recording) |
 | `--nvenc` | Encode the overlay with lossless HEVC NVENC (falls back to lossless x264 when unavailable) |
+| `--overlay-hide` | Overlay elements to leave out, comma-separated: `fps-counter`, `stats`, `stutter-alert`, `fps-graph`, `frametime-graph` |
 | `--target` | Target frame rate of the game; the overlay turns red below it (default 30) |
 | `--start` / `--end` | Span to analyze, in seconds |
 | `--threshold` | Changed pixels above this count mark a new image (default 20) |

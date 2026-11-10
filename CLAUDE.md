@@ -35,7 +35,9 @@ Tool that measures the real frame rate of games and other rendered content from 
 - **Stutters (owner priority):** frametime ≥ `stutter_factor` × median of the previous 20 counted frametimes (needs ≥ 5). Default 2.5: on a real 30 Hz recording, 1.5 flagged a single repeated frame (66.7 ms, possibly an OBS duplicate) that the owner did not see as a stutter. Frametimes that close a static run are not counted.
 - **Rolling FPS** uses the last second of non-static frames, so it continues across pauses instead of ramping up from zero; undefined for the first half second.
 - **Two-pass overlay:** static detection needs up to ~1 s of look-ahead, so the overlay is drawn in a second decode pass with the complete timeline. Chosen over a frame buffer, which would need up to ~1.5 GB at 4K60.
-- **Overlay statistics** (average, 1% low, stutter count) are cumulative up to the current frame and computed by `Stats`, the same code as the final summary.
+- **Overlay statistics** (average, 1% low) are cumulative up to the current frame and computed by `Stats`, the same code as the final summary.
+- **Overlay elements** (counter, statistics, stutter alert, FPS graph, frametime graph) are toggled individually (`OverlayElements`; GUI checkboxes, `--overlay-hide`); the remaining ones close up.
+- **No stutter count in the overlay (owner decision):** false positives are common on recordings, so the overlay only shows the stutter's frametime for 1.5 s labeled `POTENTIALLY STUTTER` / `POTENCIALMENTE STUTTER`. The summary, CSV and chart still report stutters (labeled "potential" in the summary).
 - **Out of scope by owner decision:** tearing detection, percentile-based pause filtering.
 
 ## Performance notes

@@ -26,6 +26,7 @@ pub mod yuv;
 pub use analysis::{Analysis, Options, Progress, Row, Stage, analyze};
 pub use i18n::Lang;
 pub use output::{OutputPaths, save_outputs};
+pub use overlay::OverlayElements;
 pub use stats::Stats;
 pub use summary::summarize;
 pub use timeline::{DEFAULT_STATIC_MS, DEFAULT_STUTTER_FACTOR, StaticInterval, Stutter};
